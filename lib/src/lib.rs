@@ -21,18 +21,18 @@
 //! Partial borrows offer a variety of advantages. Each of the following points includes a short
 //! in-line explanation with a link to an example code with a detailed explanation:
 //!
-//! #### [🪢 You can partially borrow self in methods (click to see example)](...)
+//! #### [🪢 You can partially borrow self in methods (click to see example)](doc::self_borrow)
 //! You can call a function that takes partially borrowed fields from `&mut self` while holding
 //! references to other parts of `Self`, even if it contains private fields.
 //!
-//! #### [👓 Partial borrows make your code more readable and less error-prone (click to see example).](...)
+//! #### [👓 Partial borrows make your code more readable and less error-prone (click to see example).](doc::readability)
 //! They allow you to drastically shorten function signatures and their usage places. They also
 //! enable you to keep the code unchanged, e.g., after adding a new field to a struct, instead of
 //! manually refactoring in potentially many places.
 //!
-//! #### [🚀 Partial borrows make your code faster (click to see example).](...)
-//! because passing a single partial reference produces more optimized code than passing many
-//! references in separate arguments.
+//! #### [🚀 Partial borrows improve performance (click to see example)](doc::performance)
+//! Passing a single partial reference is more efficient than passing multiple separate references,
+//! resulting in better-optimized code.
 //!
 //! <br/>
 //! <br/>
@@ -130,7 +130,11 @@
 //! The most important code that this macro generates is:
 //!
 //! ```
-//! # pub struct Graph;
+//! # pub struct Graph {
+//! #     pub nodes: Vec<Node>,
+//! #     pub edges: Vec<Edge>,
+//! #     pub groups: Vec<Group>,
+//! # }
 //! # pub struct Node;
 //! # pub struct Edge;
 //! # pub struct Group;
@@ -147,9 +151,13 @@
 //!             &mut Vec<Node>,
 //!             &mut Vec<Edge>,
 //!             &mut Vec<Group>,
-//!         > {
-//!         // ...
-//!         # panic!()
+//!         >
+//!     {
+//!         GraphRef {
+//!             nodes:  &mut self.nodes,
+//!             edges:  &mut self.edges,
+//!             groups: &mut self.groups
+//!         }
 //!     }
 //! }
 //! ```
@@ -208,11 +216,13 @@
 //! fn test2(graph: &mut p!(<nodes, mut edges> Graph)) {}
 //!
 //! // Which will expand to:
-//! fn test3(graph: &mut GraphRef<
-//!    &Vec<Node>,
-//!    &mut Vec<Edge>,
-//!    Hidden<Vec<Group>>
-//! >) {}
+//! fn test3(
+//!     graph: &mut GraphRef<
+//!         &Vec<Node>,
+//!         &mut Vec<Edge>,
+//!         Hidden<Vec<Group>>
+//!     >
+//! ) {}
 //! ```
 //!
 //! <sub></sub>
@@ -383,7 +393,7 @@
 //!    fn test(graph: p!(&<mut *> Graph)) {
 //!        // The inferred type of `graph3` is `p!(&<mut *, !nodes> Graph)`,
 //!        // which expands to `p!(&<mut edges, mut groups> Graph)`
-//!        let graph2 = graph.partial_borrow::<p!(<mut nodes> Graph)>();
+//!        let (graph2, graph3) = graph.split::<p!(<mut nodes> Graph)>();
 //!    }
 //!    ```
 //!
@@ -881,8 +891,8 @@
 //! <sub></sub>
 //!
 //! 3. In case you want to opt-out from this check, there is also a `partial_borrow_or_identity`
-//! method that does not perform this compile-time check. However, we recommend using it only in
-//! exceptional cases, as it may lead to confusion and harder-to-maintain code.
+//!    method that does not perform this compile-time check. However, we recommend using it only in
+//!    exceptional cases, as it may lead to confusion and harder-to-maintain code.
 //!
 //! <br/>
 //! <br/>
@@ -917,16 +927,16 @@ pub mod traits {
 // === AsRefs ===
 // ==============
 
-/// Borrow all fields of a struct and output a partially borrowed struct,
-/// like `p!(<mut field1, field2>MyStruct)`.
+/// Borrow all fields of a struct and output a partially borrowed struct, like
+/// `p!(<mut field1, field2>MyStruct)`.
 pub trait AsRefs<'t, T> {
     fn as_refs_impl(&'t mut self) -> T;
 }
 
 impl<'t, T> AsRefsHelper<'t> for T {}
 pub trait AsRefsHelper<'t> {
-    /// Borrow all fields of a struct and output a partially borrowed struct,
-    /// like `p!(<mut field1, field2>MyStruct)`.
+    /// Borrow all fields of a struct and output a partially borrowed struct, like
+    /// `p!(<mut field1, field2>MyStruct)`.
     #[inline(always)]
     fn as_refs<T>(&'t mut self) -> T
     where Self: AsRefs<'t, T> { self.as_refs_impl() }
@@ -944,7 +954,7 @@ pub struct Hidden<T>(*mut T);
 
 impl<T> Copy for Hidden<T> {}
 impl<T> Clone for Hidden<T> {
-    fn clone(&self) -> Self { Self(self.0) }
+    fn clone(&self) -> Self { *self }
 }
 
 
@@ -977,6 +987,7 @@ impl<'t, T> RefCast<'t, Hidden<T>> for T {
 // === RefFlatten ===
 // ==================
 
+/// Flattens `&mut &mut T` into `&mut T` and `&mut &T` into `&T`.
 pub trait RefFlatten<'t> {
     type Output;
     fn ref_flatten(&'t mut self) -> Self::Output;
@@ -1003,12 +1014,11 @@ pub type RefFlattened<'t, T> = <T as RefFlatten<'t>>::Output;
 // === Acquire ===
 // ===============
 
-
 /// This is a documentation for type-level field borrowing transformation. It involves checking if a
 /// field of a partially borrowed struct can be borrowed in a specific form and provides the remaining
 /// fields post-borrow.
 pub trait           Acquire<Target>                  { type Rest; }
-impl<'t, T, S>      Acquire<Hidden<T>> for S         { type Rest = S; }
+impl<T, S>          Acquire<Hidden<T>> for S         { type Rest = S; }
 impl<'t: 's, 's, T> Acquire<&'s mut T> for &'t mut T { type Rest = Hidden<T>; }
 impl<'t: 's, 's, T> Acquire<&'s     T> for &'t mut T { type Rest = &'t T; }
 impl<'t: 's, 's, T> Acquire<&'s     T> for &'t     T { type Rest = &'t T; }
@@ -1021,8 +1031,8 @@ pub type Acquired<This, Target> = <This as Acquire<Target>>::Rest;
 // === SplitFields ===
 // ===================
 
-/// Split HList of borrows into target HList of borrows and a HList of remaining borrows after
-/// acquiring the target. See the documentation of [`Acquire`] for more information.
+/// Split `HList` of borrows into target `HList` of borrows and a `HList` of remaining borrows
+/// after acquiring the target. See the documentation of [`Acquire`] for more information.
 ///
 /// This trait is automatically implemented for all types.
 pub trait          SplitFields<Target>               { type Rest; }
@@ -1039,7 +1049,7 @@ type SplitFieldsRest<T, Target> = <T as SplitFields<Target>>::Rest;
 // === Partial ===
 // ===============
 
-/// Helper trait for [`Partial`]. This trait is automatically implemented by the [`partial_borrow!`]
+/// Helper trait for [`Partial`]. This trait is automatically implemented by the [`borrow!`]
 /// macro. It is used to provide Rust type inferencer with additional type information. In particular, it
 /// is used to tell that any partial borrow of a struct results in the same struct type, but parametrized
 /// differently. It is needed for Rust to correctly infer target types for associated methods, like:
@@ -1157,7 +1167,7 @@ impl<'s, 't, H, T, T2> NotEqFields<Cons<&'s     H, T>> for Cons<&'t H, T2> where
 
 pub trait UnifyField<Other> { type Result; }
 
-impl<'t, T> UnifyField<Hidden<T>> for Hidden<T> { type Result = Hidden<T>; }
+impl<    T> UnifyField<Hidden<T>> for Hidden<T> { type Result = Hidden<T>; }
 impl<'t, T> UnifyField<&'t     T> for Hidden<T> { type Result = &'t     T; }
 impl<'t, T> UnifyField<&'t mut T> for Hidden<T> { type Result = &'t mut T; }
 

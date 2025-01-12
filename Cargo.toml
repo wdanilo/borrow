@@ -13,7 +13,6 @@ panic = "abort"
 overflow-checks = false
 
 [workspace.lints.clippy]
-absolute_paths = "warn"
 assigning_clones = "warn"
 checked_conversions = "warn"
 cloned_instead_of_copied = "warn"
@@ -49,8 +48,9 @@ unnecessary_wraps = "warn"
 unnested_or_patterns = "warn"
 unreadable_literal = "warn"
 unused_self = "warn"
-use_self = "warn"
 unwrap_used = "warn"
+#use_self = "warn"
+#absolute_paths = "warn"
 #too_many_lines = "warn"
 #undocumented_unsafe_blocks = "warn"
 #print_stdout = "warn"

@@ -1,3 +1,7 @@
+#![allow(clippy::panic)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Path};
@@ -48,6 +52,7 @@ fn extract_module_attr(input: &DeriveInput) -> Path {
 ///     pub scene: SceneCtx,
 /// }
 /// ```
+#[allow(clippy::cognitive_complexity)]
 #[proc_macro_derive(Partial, attributes(module))]
 pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
     let lib = crate_name();
@@ -86,11 +91,7 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
 
     let struct_inline_bounds = generics.iter().filter_map(|g| {
         if let syn::GenericParam::Type(ty) = g {
-            if !ty.bounds.is_empty() {
-                Some(ty)
-            } else {
-                None
-            }
+            (!ty.bounds.is_empty()).then_some(ty)
         } else {
             None
         }
@@ -363,7 +364,7 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
     // pub use _Ctx as Ctx;
     let ref_macro = {
         let fields_at = (0..field_idents.len()).map(|i| {
-            let n = Ident::new(&format!("N{}", i), Span::call_site());
+            let n = Ident::new(&format!("N{i}"), Span::call_site());
             quote! {#lib::FieldAt<#lib::hlist::#n, #struct_ident<$($ps)*>>}
         }
         ).collect_vec();
@@ -373,7 +374,7 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
         let all_ref_mut = quote! {#([#lib::lifetime_chooser!{[$lt $($lt2)?] mut #fields_at}])*};
         let ts_idents = field_idents.iter().enumerate().map(|(i, _)| Ident::new(&format!("t{i}"), Span::call_site())).collect_vec();
         let ts = ts_idents.iter().map(|t| quote!($#t)).collect_vec();
-        let struct_ident2 = Ident::new(&format!("_{}", struct_ident), struct_ident.span());
+        let struct_ident2 = Ident::new(&format!("_{struct_ident}"), struct_ident.span());
         let gen_patterns = |pattern: pm::TokenStream, f: Box<dyn Fn(&pm::TokenStream) -> pm::TokenStream>| {
             field_idents.iter().zip(fields_at.iter()).enumerate().map(|(i, (name, tp))| {
                 let result = f(tp);
@@ -448,7 +449,7 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
                     quote!{#ident}
                 }
             }).collect_vec();
-            let field = Ident::new(&field_str, Span::call_site());
+            let field = Ident::new(field_str, Span::call_site());
             let name = Ident::new(&format!("extract_{field}"), field.span());
             quote! {
                 #[inline(always)]

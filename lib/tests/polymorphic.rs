@@ -2,7 +2,6 @@
 
 use borrow::partial as p;
 use borrow::traits::*;
-use borrow::*;
 use std::fmt::Debug;
 use std::vec::Vec;
 

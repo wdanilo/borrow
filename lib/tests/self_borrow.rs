@@ -29,6 +29,7 @@ struct Group {
     nodes: Vec<NodeId>,
 }
 
+
 // =============
 // === Graph ===
 // =============
@@ -50,6 +51,7 @@ impl p!(<mut *> Graph) {
     fn detach_all_nodes(&mut self) {
         let (nodes, self2) = self.extract_nodes();
         for node in nodes {
+            // Partial self-borrowing occurs here.
             self2.partial_borrow().detach_node(node);
         }
     }
