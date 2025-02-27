@@ -19,6 +19,29 @@ pub type N6 = Succ<N5>;
 pub type N7 = Succ<N6>;
 pub type N8 = Succ<N7>;
 pub type N9 = Succ<N8>;
+pub type N10 = Succ<N9>;
+pub type N11 = Succ<N10>;
+pub type N12 = Succ<N11>;
+pub type N13 = Succ<N12>;
+pub type N14 = Succ<N13>;
+pub type N15 = Succ<N14>;
+pub type N16 = Succ<N15>;
+pub type N17 = Succ<N16>;
+pub type N18 = Succ<N17>;
+pub type N19 = Succ<N18>;
+pub type N20 = Succ<N19>;
+pub type N21 = Succ<N20>;
+pub type N22 = Succ<N21>;
+pub type N23 = Succ<N22>;
+pub type N24 = Succ<N23>;
+pub type N25 = Succ<N24>;
+pub type N26 = Succ<N25>;
+pub type N27 = Succ<N26>;
+pub type N28 = Succ<N27>;
+pub type N29 = Succ<N28>;
+pub type N30 = Succ<N29>;
+pub type N31 = Succ<N30>;
+pub type N32 = Succ<N31>;
 
 
 // =============

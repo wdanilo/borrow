@@ -106,7 +106,7 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
     let field_vis = fields.iter().map(|f| f.vis.clone()).collect_vec();
     let field_idents = fields.iter().map(|f| f.ident.as_ref().unwrap()).collect_vec();
     let field_types = fields.iter().map(|f| &f.ty).collect_vec();
-    let params = field_idents.iter().map(|i| Ident::new(&i.to_string(), i.span())).collect_vec();
+    let params = field_idents.iter().map(|i| Ident::new(&format!("__{i}"), i.span())).collect_vec();
 
     // Generates:
     // #[repr(C)]
@@ -143,17 +143,17 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
     };
 
     // Generates:
-    // impl<'t, 'v, V, version, geometry, material, mesh, scene>
-    // AsRefs<'t, CtxRef<version, geometry, material, mesh, scene>> for Ctx<'v, V>
+    // impl<'t, 'v, V, __version, __geometry, __material, __mesh, __scene>
+    // AsRefs<'t, CtxRef<__version, __geometry, __material, __mesh, __scene>> for Ctx<'v, V>
     // where
     //     V:           Debug,
-    //     (&'v V):     RefCast<'t, version>,
-    //     GeometryCtx: RefCast<'t, geometry>,
-    //     MaterialCtx: RefCast<'t, material>,
-    //     MeshCtx:     RefCast<'t, mesh>,
-    //     SceneCtx:    RefCast<'t, scene>,
+    //     (&'v V):     RefCast<'t, __version>,
+    //     GeometryCtx: RefCast<'t, __geometry>,
+    //     MaterialCtx: RefCast<'t, __material>,
+    //     MeshCtx:     RefCast<'t, __mesh>,
+    //     SceneCtx:    RefCast<'t, __scene>,
     // {
-    //     fn as_refs_impl(&'t mut self) -> CtxRef<version, geometry, material, mesh, scene> {
+    //     fn as_refs_impl(&'t mut self) -> CtxRef<__version, __geometry, __material, __mesh, __scene> {
     //         CtxRef {
     //             version:  RefCast::ref_cast(&mut self.version),
     //             geometry: RefCast::ref_cast(&mut self.geometry),
@@ -442,21 +442,22 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
         let fns = idents_str.iter().map(|field_str| {
             let params = idents_str.iter().map(|i| {
                 if i == field_str {
-                    let ident = Ident::new(i, Span::call_site());
+                    let ident = Ident::new(&format!("__{i}"), Span::call_site());
                     quote!{#lib::Acquired<#ident, #ident>}
                 } else {
-                    let ident = Ident::new(i, Span::call_site());
+                    let ident = Ident::new(&format!("__{i}"), Span::call_site());
                     quote!{#ident}
                 }
             }).collect_vec();
+            let param = Ident::new(&format!("__{field_str}"), Span::call_site());
             let field = Ident::new(field_str, Span::call_site());
             let name = Ident::new(&format!("extract_{field}"), field.span());
             quote! {
                 #[inline(always)]
                 pub fn #name(&'t mut self) -> (
-                    <#field as #lib::RefFlatten<'t>>::Output,
+                    <#param as #lib::RefFlatten<'t>>::Output,
                     &'t mut #ref_struct_ident<#(#params,)*>
-                ) where #field: #lib::Acquire<#field> + #lib::RefFlatten<'t> {
+                ) where #param: #lib::Acquire<#param> + #lib::RefFlatten<'t> {
                     let rest = unsafe { &mut *(self as *mut _ as *mut _) };
                     (self.#field.ref_flatten(), rest)
                 }
