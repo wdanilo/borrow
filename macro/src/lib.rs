@@ -382,7 +382,7 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
                 results[i] = &result;
                 quote! {
                     (@ [$($ps:tt)*] $lt:lifetime [#(#ts:tt)*] [, #pattern #name $($xs:tt)*]) => {
-                        $crate::#struct_ident! {@ [$($ps)*]  $lt [#(#results)*] [$($xs)*]}
+                        #module::#struct_ident! {@ [$($ps)*]  $lt [#(#results)*] [$($xs)*]}
                     };
                 }
             }).collect_vec()
@@ -394,13 +394,13 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
             #[macro_export]
             macro_rules! #struct_ident2 {
                 (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, ! * $($xs:tt)*]) => {
-                    $crate::#struct_ident! {@ [$($ps)*]  $lt [#all_hidden] [$($xs)*]}
+                    #module::#struct_ident! {@ [$($ps)*]  $lt [#all_hidden] [$($xs)*]}
                 };
                 (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, $($lt2:lifetime)? * $($xs:tt)*]) => {
-                    $crate::#struct_ident! {@ [$($ps)*]  $lt [#all_ref] [$($xs)*]}
+                    #module::#struct_ident! {@ [$($ps)*]  $lt [#all_ref] [$($xs)*]}
                 };
                 (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, $($lt2:lifetime)? mut * $($xs:tt)*]) => {
-                    $crate::#struct_ident! {@ [$($ps)*]  $lt [#all_ref_mut] [$($xs)*]}
+                    #module::#struct_ident! {@ [$($ps)*]  $lt [#all_ref_mut] [$($xs)*]}
                 };
                 #(#patterns_ref)*
                 #(#patterns_ref_mut)*
@@ -409,10 +409,10 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
                 (@ [$($ps:tt)*]  $($ts:tt)*) => { MACRO_EXPANSION_ERROR!($($ts)*) };
 
                 ([$($ps:tt)*] $lt:lifetime, $($ts:tt)*) => {
-                    $crate::#struct_ident! {@ [$($ps)*] $lt [#all_hidden] [, $($ts)*]}
+                    #module::#struct_ident! {@ [$($ps)*] $lt [#all_hidden] [, $($ts)*]}
                 };
                 ([$($ps:tt)*] $($ts:tt)*) => {
-                    $crate::#struct_ident! {@ [$($ps)*] '_ [#all_hidden] [,$($ts)*]}
+                    #module::#struct_ident! {@ [$($ps)*] '_ [#all_hidden] [,$($ts)*]}
                 };
             }
 
