@@ -1,6 +1,6 @@
 [package]
 name = "borrow"
-version = "1.1.0"
+version = "1.2.0"
 authors = ["Wojciech Danilo <wojciech.danilo@gmail.com>"]
 description = "Zero-overhead, safe implementation of partial borrows. This crate allows you to borrow selected fields from a struct and split structs into non-overlapping sets of borrowed fields."
 edition = "2021"

@@ -1,6 +1,6 @@
 [package]
 name = "borrow-macro"
-version = "1.1.0"
+version = "1.2.0"
 authors = ["Wojciech Danilo <wojciech.danilo@gmail.com>"]
 description = "Helper for the borrow crate."
 edition = "2021"
