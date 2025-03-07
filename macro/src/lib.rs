@@ -392,6 +392,7 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
         let patterns_ref_none = gen_patterns(quote!{!}, Box::new(|t: &pm::TokenStream| quote!{[#lib::Hidden<#t >]}));
         quote! {
             #[macro_export]
+            #[allow(clippy::crate_in_macro_def)]
             macro_rules! #struct_ident2 {
                 (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, ! * $($xs:tt)*]) => {
                     #module::#struct_ident! {@ [$($ps)*]  $lt [#all_hidden] [$($xs)*]}
