@@ -933,7 +933,7 @@ pub trait AsRefs<'t, T> {
     fn as_refs_impl(&'t mut self) -> T;
 }
 
-impl<'t, T> AsRefsHelper<'t> for T {}
+impl<T> AsRefsHelper<'_> for T {}
 pub trait AsRefsHelper<'t> {
     /// Borrow all fields of a struct and output a partially borrowed struct, like
     /// `p!(<mut field1, field2>MyStruct)`.
@@ -993,14 +993,14 @@ pub trait RefFlatten<'t> {
     fn ref_flatten(&'t mut self) -> Self::Output;
 }
 
-impl<'s, 't, T: 't> RefFlatten<'t> for &'s mut T {
+impl<'t, T: 't> RefFlatten<'t> for &'_ mut T {
     type Output = &'t mut T;
     fn ref_flatten(&'t mut self) -> Self::Output {
         *self
     }
 }
 
-impl<'s, 't, T: 't> RefFlatten<'t> for &'s T {
+impl<'t, T: 't> RefFlatten<'t> for &'_ T {
     type Output = &'t T;
     fn ref_flatten(&'t mut self) -> Self::Output {
         *self
@@ -1148,17 +1148,17 @@ impl<Source, Target> NotEq<Target> for Source where
 }
 
 pub trait NotEqFields<Target> {}
-impl<    't, H, T, T2> NotEqFields<Cons<&'t mut H, T>> for Cons<Hidden<H>, T2> {}
-impl<    't, H, T, T2> NotEqFields<Cons<&'t     H, T>> for Cons<Hidden<H>, T2> {}
-impl<        H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<Hidden<H>, T2> where T: NotEqFields<T2> {}
+impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<Hidden<H>, T2> {}
+impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<Hidden<H>, T2> {}
+impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<Hidden<H>, T2> where T: NotEqFields<T2> {}
 
-impl<    't, H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'t mut H, T2> {}
-impl<'s, 't, H, T, T2> NotEqFields<Cons<&'s     H, T>> for Cons<&'t mut H, T2> {}
-impl<'s, 't, H, T, T2> NotEqFields<Cons<&'s mut H, T>> for Cons<&'t mut H, T2> where T: NotEqFields<T2> {}
+impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ mut H, T2> {}
+impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ mut H, T2> {}
+impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ mut H, T2> where T: NotEqFields<T2> {}
 
-impl<    't, H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'t H, T2> {}
-impl<'s, 't, H, T, T2> NotEqFields<Cons<&'s mut H, T>> for Cons<&'t H, T2> {}
-impl<'s, 't, H, T, T2> NotEqFields<Cons<&'s     H, T>> for Cons<&'t H, T2> where T: NotEqFields<T2> {}
+impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ H, T2> {}
+impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ H, T2> {}
+impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ H, T2> where T: NotEqFields<T2> {}
 
 
 // ==================
