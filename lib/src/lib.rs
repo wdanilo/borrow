@@ -39,10 +39,6 @@
 //!
 //! # 📖 Other literature
 //!
-//! In real-world applications, lack of partial borrows often affects API design, making code hard
-//! to maintain and understand. This issue was described multiple times over the years, some of the
-//! most notable discussions include:
-//!
 //! In real-world applications, the lack of partial borrows often affects API design, making code
 //! hard to maintain and understand. This issue has been described multiple times over the years.
 //! Some of the most notable discussions include:
