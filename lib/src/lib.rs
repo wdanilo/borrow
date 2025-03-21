@@ -1113,6 +1113,12 @@ pub trait PartialHelper {
     /// Borrow fields from this partial borrow for the `Target` partial borrow, like
     /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
     #[inline(always)]
+    fn part<Target>(&mut self) -> &mut Target
+    where Self: PartialNotEq<Target> { self.partial_borrow_impl() }
+
+    /// Borrow fields from this partial borrow for the `Target` partial borrow, like
+    /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
+    #[inline(always)]
     fn partial_borrow_or_eq<Target>(&mut self) -> &mut Target
     where Self: Partial<Target> { self.partial_borrow_impl() }
 
@@ -1241,4 +1247,318 @@ macro_rules! partial {
 
     // Production
     (@4 $n:ident $ps:tt [$($fs:tt)*]) => { $n! { $ps $($fs)* } };
+}
+
+
+// ===================
+
+pub struct GeometryCtx {}
+pub struct MaterialCtx {}
+pub struct MeshCtx {}
+pub struct SceneCtx {}
+
+pub struct Ctx<'v, V: Debug> {
+    version: &'v V,
+    pub geometry: GeometryCtx,
+    pub material: MaterialCtx,
+    pub mesh: MeshCtx,
+    pub scene: SceneCtx,
+}
+//
+// #[repr(C)]
+// #[allow(non_camel_case_types)]
+// pub struct CtxRef<version, geometry, material, mesh, scene> {
+//     pub version: version,
+//     pub geometry: geometry,
+//     pub material: material,
+//     pub mesh: mesh,
+//     pub scene: scene,
+// }
+
+#[repr(C)]
+#[allow(non_camel_case_types)]
+pub struct CtxRef<version, geometry, material, mesh, scene> {
+    pub version: version,
+    pub geometry: geometry,
+    pub material: material,
+    pub mesh: mesh,
+    pub scene: scene,
+}
+
+
+/// A phantom type used to mark fields as hidden in the partially borrowed structs.
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Hidden2<T>(*const T);
+
+impl<T> Copy for Hidden2<T> {}
+impl<T> Clone for Hidden2<T> {
+    fn clone(&self) -> Self { *self }
+}
+
+pub trait Acquire2<'s, Target> {
+    // type Rest;
+    // fn acquire(&'s mut self) -> (Target, Self::Rest);
+    fn acquire(&'s mut self) -> Target;
+}
+
+impl<'s, 't, T> Acquire2<'s, Hidden2<T>> for &'t mut T {
+    // type Rest = &'t mut T;
+    fn acquire(&'s mut self) -> Hidden2<T> { Hidden2(*self) }
+}
+
+impl<'s, 't, T> Acquire2<'s, Hidden2<T>> for &'t T  {
+    // type Rest = &'t T;
+    fn acquire(&'s mut self) -> Hidden2<T> { Hidden2(*self) }
+}
+
+impl<'s, T> Acquire2<'s, Hidden2<T>> for Hidden2<T>  {
+    // type Rest = Hidden2<T>;
+    fn acquire(&'s mut self) -> Hidden2<T> { *self }
+}
+
+impl<'s, 't, 'y, T> Acquire2<'s, &'y mut T> for &'t mut T where 's: 'y {
+    // type Rest = Hidden2<T>;
+    fn acquire(&'s mut self) -> &'y mut T {
+        *self
+    }
+}
+
+impl<'s, 't, 'y, T> Acquire2<'s, &'y T> for &'t mut T
+where 's: 'y {
+    // type Rest = &'t T;
+    fn acquire(&'s mut self) -> &'y T {
+        *self
+    }
+}
+
+impl<'s, 't, 'y, T> Acquire2<'s, &'y T> for &'t T
+where 't: 'y {
+    // type Rest = &'t T;
+    fn acquire(&'s mut self) -> &'y T {
+        *self
+    }
+}
+
+#[allow(non_camel_case_types)]
+impl<version, geometry, material, mesh, scene>
+CtxRef<version, geometry, material, mesh, scene> {
+    pub fn partial_borrow2<'x, version2, geometry2, material2, mesh2, scene2>
+    (&'x mut self) -> CtxRef<version2, geometry2, material2, mesh2, scene2>
+    where
+        version: Acquire2<'x, version2>,
+        geometry: Acquire2<'x, geometry2>,
+        material: Acquire2<'x, material2>,
+        mesh: Acquire2<'x, mesh2>,
+        scene: Acquire2<'x, scene2>
+    {
+        CtxRef {
+            version:  self.version.acquire(),
+            geometry: self.geometry.acquire(),
+            material: self.material.acquire(),
+            mesh:     self.mesh.acquire(),
+            scene:    self.scene.acquire(),
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+impl<version_target, geometry_target, material_target, mesh_target, scene_target,
+     version,        geometry,        material,        mesh,        scene>
+PartialInferenceGuide<
+      CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>
+> for CtxRef<version,        geometry,        material,        mesh,        scene> {}
+
+
+#[allow(non_camel_case_types)]
+impl<'t, 'v, V, __version, __geometry, __material, __mesh, __scene>
+AsRefs<'t, CtxRef<__version, __geometry, __material, __mesh, __scene>> for Ctx<'v, V>
+where
+    V:           Debug,
+    &'v V:       RefCast<'t, __version>,
+    GeometryCtx: RefCast<'t, __geometry>,
+    MaterialCtx: RefCast<'t, __material>,
+    MeshCtx:     RefCast<'t, __mesh>,
+    SceneCtx:    RefCast<'t, __scene>,
+{
+    fn as_refs_impl(&'t mut self) -> CtxRef<__version, __geometry, __material, __mesh, __scene> {
+        CtxRef {
+            version:  RefCast::ref_cast(&mut self.version),
+            geometry: RefCast::ref_cast(&mut self.geometry),
+            material: RefCast::ref_cast(&mut self.material),
+            mesh:     RefCast::ref_cast(&mut self.mesh),
+            scene:    RefCast::ref_cast(&mut self.scene),
+        }
+    }
+}
+
+impl<'v, V> Ctx<'v, V>
+where V: Debug
+{
+    pub fn as_refs_mut(&mut self) -> CtxRef<&mut &'v V, &mut GeometryCtx, &mut MaterialCtx, &mut MeshCtx, &mut SceneCtx> {
+        CtxRef {
+            version:  &mut self.version,
+            geometry: &mut self.geometry,
+            material: &mut self.material,
+            mesh:     &mut self.mesh,
+            scene:    &mut self.scene,
+        }
+    }
+}
+
+impl<'v, V: Debug> HasFields for Ctx<'v, V> {
+    type Fields = HList![&'v V, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
+}
+
+#[allow(non_camel_case_types)]
+impl<version, geometry, material, mesh, scene>
+HasFields for CtxRef<version, geometry, material, mesh, scene> {
+    type Fields = HList![version, geometry, material, mesh, scene];
+}
+
+#[allow(non_camel_case_types)]
+impl<version_target, geometry_target, material_target, mesh_target, scene_target,
+     version,        geometry,        material,        mesh,        scene>
+ReplaceFields<HList![version_target, geometry_target, material_target, mesh_target, scene_target]>
+for CtxRef<version, geometry, material, mesh, scene> {
+    type Result = CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>;
+}
+
+#[macro_export]
+macro_rules! _Ctx {
+    (@ [$($ps:tt)*] $lt:lifetime $ts:tt [, $($lt2:lifetime)? * $($xs:tt)*]) => {
+        _Ctx! { @ [$($ps)*] $lt [
+            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N0, Ctx<$($ps)*>> }]
+            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N1, Ctx<$($ps)*>> }]
+            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N2, Ctx<$($ps)*>> }]
+            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N3, Ctx<$($ps)*>> }]
+            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N4, Ctx<$($ps)*>> }]
+        ] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime $ts:tt [, $($lt2:lifetime)? mut * $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [
+            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N0, Ctx<$($ps)*>> }]
+            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N1, Ctx<$($ps)*>> }]
+            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N2, Ctx<$($ps)*>> }]
+            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N3, Ctx<$($ps)*>> }]
+            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N4, Ctx<$($ps)*>> }]
+        ] [$ ($xs) *] }
+    };
+
+
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? version $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [[lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N0, Ctx<$($ps)*>>}] $t1 $t2 $t3 $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? geometry $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N1, Ctx<$($ps)*>>}] $t2 $t3 $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? material $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 $t1 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N2, Ctx<$($ps)*>>}] $t3 $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? mesh $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N3, Ctx<$($ps)*>>}] $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? scene $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 $t3 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N4, Ctx<$($ps)*>>}]] [$ ($xs) *] }
+    };
+
+
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut version $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [[lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N0, Ctx<$($ps)*>>}] $t1 $t2 $t3 $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut geometry $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N1, Ctx<$($ps)*>>}] $t2 $t3 $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)?mut material $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 $t1 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N2, Ctx<$($ps)*>>}] $t3 $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut mesh $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N3, Ctx<$($ps)*>>}] $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut scene $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 $t3 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N4, Ctx<$($ps)*>>}]] [$ ($xs) *] }
+    };
+
+
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! version $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [[Hidden<FieldAt<hlist::N0, Ctx<$($ps)*>>>] $t1 $t2 $t3 $t4] [$ ($xs) *] }
+    };
+
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! geometry $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 [Hidden<FieldAt<hlist::N1, Ctx<$($ps)*>>>] $t2 $t3 $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! material $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 $t1 [Hidden<FieldAt<hlist::N2, Ctx<$($ps)*>>>] $t3 $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! mesh $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 [Hidden<FieldAt<hlist::N3, Ctx<$($ps)*>>>] $t4] [$ ($xs) *] }
+    };
+    (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! scene $ ($xs:tt) *]) => {
+        _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 $t3 [Hidden<FieldAt<hlist::N4, Ctx<$($ps)*>>>]] [$ ($xs) *] }
+    };
+
+
+    (@ $ps:tt $lt:lifetime [$ ([$ ($ts:tt) *]) *] [$ (,) *]) => {
+        CtxRef < $ ($ ($ts) *), * >
+    };
+
+    (@ $($ts:tt)*) => { MACRO_EXPAND_ERROR! { $($ts)* } };
+
+    ([$($ps:tt)*] $lt:lifetime $ ($ts:tt) *) => {
+        _Ctx! { @ [$($ps)*] $lt [
+            [Hidden<FieldAt<hlist::N0, Ctx<$($ps)*>>>]
+            [Hidden<FieldAt<hlist::N1, Ctx<$($ps)*>>>]
+            [Hidden<FieldAt<hlist::N2, Ctx<$($ps)*>>>]
+            [Hidden<FieldAt<hlist::N3, Ctx<$($ps)*>>>]
+            [Hidden<FieldAt<hlist::N4, Ctx<$($ps)*>>>]
+        ] [$($ts)*] }
+    };
+
+    ([$($ps:tt)*] $($ts:tt)*) => {
+        _Ctx! { @ [$($ps)*] '_ [
+            [Hidden<FieldAt<hlist::N0, Ctx<$($ps)*>>>]
+            [Hidden<FieldAt<hlist::N1, Ctx<$($ps)*>>>]
+            [Hidden<FieldAt<hlist::N2, Ctx<$($ps)*>>>]
+            [Hidden<FieldAt<hlist::N3, Ctx<$($ps)*>>>]
+            [Hidden<FieldAt<hlist::N4, Ctx<$($ps)*>>>]
+        ] [, $ ($ts) *] }
+    };
+}
+pub use _Ctx as Ctx;
+
+
+fn _test(mut ctx: Ctx<'_, usize>) {
+    let _ctx_ref_mut = ctx.as_refs_mut();
+}
+
+fn _test2(ctx: partial!(&<mut *> Ctx<'_, usize>)) {
+    // _test4(ctx.partial_borrow())
+    _test5(ctx.partial_borrow2());
+    _test5(ctx.partial_borrow2());
+    _test5(ctx.partial_borrow2());
+    _test5(ctx.partial_borrow2());
+}
+
+
+fn _test3(_ctx: &mut CtxRef<Hidden<FieldAt<hlist::N0, Ctx<'_, usize>>>, Hidden<FieldAt<hlist::N1, Ctx<'_, usize>>>, &'_ mut FieldAt<hlist::N2, Ctx<'_, usize>>, Hidden<FieldAt<hlist::N3, Ctx<'_, usize>>>, Hidden<FieldAt<hlist::N4, Ctx<'_, usize>>>>) {
+}
+
+fn _test4(_ctx: &mut CtxRef<Hidden<&'_ usize>, Hidden<GeometryCtx>, &'_ mut MaterialCtx, Hidden<MeshCtx>, Hidden<SceneCtx>>) {
+}
+
+fn _test5(_ctx: CtxRef<Hidden2<&'_ usize>, Hidden2<GeometryCtx>, &'_ mut MaterialCtx, Hidden2<MeshCtx>, Hidden2<SceneCtx>>) {
+}
+
+#[allow(dead_code)]
+#[must_use]
+struct MU;
+
+#[allow(dead_code)]
+struct Foo {
+    x: MU,
+    y: MU,
+}
+
+fn _test6(foo: Foo) {
+    let _y = foo.y;
 }
