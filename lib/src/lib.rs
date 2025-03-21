@@ -886,7 +886,7 @@
 //!
 //! <sub></sub>
 //!
-//! 3. In case you want to opt-out from this check, there is also a `partial_borrow_or_identity`
+//! 3. In case you want to opt-out from this check, there is also a `partial_borrow_or_eq`
 //!    method that does not perform this compile-time check. However, we recommend using it only in
 //!    exceptional cases, as it may lead to confusion and harder-to-maintain code.
 //!
@@ -1111,7 +1111,10 @@ pub trait PartialHelper {
     where Self: PartialNotEq<Target> { self.partial_borrow_impl() }
 
     /// Borrow fields from this partial borrow for the `Target` partial borrow, like
-    /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
+    /// `ctx.partial_borrow_or_eq::<p!(<mut scene>Ctx)>()`.
+    ///
+    /// Unlike `partial_borrow` this also allows borrowing the same fields as in the
+    /// current partial borrow.
     #[inline(always)]
     fn partial_borrow_or_eq<Target>(&mut self) -> &mut Target
     where Self: Partial<Target> { self.partial_borrow_impl() }
