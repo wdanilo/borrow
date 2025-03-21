@@ -820,7 +820,7 @@
 //!
 //! 1. Whenever you see the call to `partial_borrow`, you can be sure that target borrow uses
 //!    subset of fields from the original borrow:
-//!    ```ignore
+//!    ```compile_fail
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::traits::*;
@@ -889,6 +889,31 @@
 //! 3. In case you want to opt-out from this check, there is also a `partial_borrow_or_eq`
 //!    method that does not perform this compile-time check. However, we recommend using it only in
 //!    exceptional cases, as it may lead to confusion and harder-to-maintain code.
+//!
+//!    ```
+//!    # use std::vec::Vec;
+//!    # use borrow::partial as p;
+//!    # use borrow::traits::*;
+//!    #
+//!    #    #[derive(Default, borrow::Partial)]
+//!    #    #[module(crate)]
+//!    # struct Graph {
+//!    #     nodes: Vec<usize>,
+//!    #     edges: Vec<usize>,
+//!    # }
+//!    #
+//!    # impl p!(<mut nodes> Graph) {
+//!    #     fn detach_all_nodes(&mut self) {}
+//!    # }
+//!    #
+//!    # fn main() {}
+//!    #
+//!    fn run(graph: p!(&<mut nodes, mut edges> Graph)) {
+//!        test(graph.partial_borrow_or_eq())
+//!    }
+//!
+//!    fn test(graph: p!(&<mut nodes, mut edges> Graph)) { /* ... */ }
+//!    ```
 //!
 //! <br/>
 //! <br/>
