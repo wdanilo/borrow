@@ -12,6 +12,7 @@ repository = "https://github.com/wdanilo/borrow"
 
 [dependencies]
 borrow-macro = { version = "1.3.0", path = "../macro" }
+tstr = { version = "0.2" }
 
 [lints]
 workspace = true
