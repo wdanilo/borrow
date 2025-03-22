@@ -1400,8 +1400,8 @@ impl<T> DerefMut for Field<T> {
 
 // ==========================
 
-trait HasRefAllHidden {
-    type RefAllHidden;
+trait HasAllHiddenFields {
+    type AllHiddenFields;
 }
 
 trait HasField<Field> {
@@ -1410,11 +1410,25 @@ trait HasField<Field> {
 
 type FieldIndex<T, Field> = <T as HasField<Field>>::Index;
 
+trait HasRefWithFields<F> {
+    type Output;
+}
+
+type RefWithFields<T, F> = <T as HasRefWithFields<F>>::Output;
+
 // ==========================
 
-impl<'t, T: Debug> HasRefAllHidden for Ctx<'t, T> {
-    type RefAllHidden = CtxRef<Hidden2, Hidden2, Hidden2, Hidden2, Hidden2>;
+impl<'t, T: Debug, version, geometry, material, mesh, scene>
+HasRefWithFields<HList![version, geometry, material, mesh, scene]>
+for Ctx<'t, T> {
+    type Output = CtxRef<version, geometry, material, mesh, scene>;
 }
+
+impl<'t, T: Debug> HasAllHiddenFields for Ctx<'t, T> {
+    type AllHiddenFields = HList![Hidden2, Hidden2, Hidden2, Hidden2, Hidden2];
+}
+
+type AllHiddenFields<T> = <T as HasAllHiddenFields>::AllHiddenFields;
 //
 // type Foo<'t> = hlist::SetItemAtResult<
 //     HList![Hidden2, Hidden2, Hidden2, Hidden2, Hidden2],
@@ -1422,19 +1436,37 @@ impl<'t, T: Debug> HasRefAllHidden for Ctx<'t, T> {
 //     &'t mut hlist::ItemAt<hlist::N1, Fields<Ctx<'static, usize>>>
 // >;
 
-type Foo<'t> = SetMutRefAt<'t, Ctx<'static, usize>, hlist::N1, HList![Hidden2, Hidden2, Hidden2, Hidden2, Hidden2]>;
 
-type SetMutRefAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
+type SetFieldAsMutAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
     &'t mut hlist::ItemAt<N, Fields<S>>
+>;
+
+type SetFieldAsRefAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
+    &'t hlist::ItemAt<N, Fields<S>>
+>;
+
+type SetFieldAsHiddenAt<'t, N, X> = hlist::SetItemAtResult<X, N,
+    Hidden2
+>;
+
+type SetFieldAsMut<'t, S, F, X> = SetFieldAsMutAt<'t, S, FieldIndex<S, F>, X>;
+type SetFieldAsRef<'t, S, F, X> = SetFieldAsRefAt<'t, S, FieldIndex<S, F>, X>;
+type SetFieldAsHidden<'t, S, F, X> = SetFieldAsHiddenAt<'t, FieldIndex<S, F>, X>;
+
+type Foo<'t> = RefWithFields<
+    Ctx<'static, usize>,
+    SetFieldAsMut<'t, Ctx<'static, usize>, TS!(geometry),
+        AllHiddenFields<Ctx<'static, usize>>
+    >
 >;
 
 type Bar<'t> =  HList![Hidden2, &'t mut GeometryCtx, Hidden2, Hidden2, Hidden2];
 
-fn foo_test(t: PhantomData<Foo<'static>>) {
+fn foo_test(t: Foo<'static>) {
     bar_test(t)
 }
 
-fn bar_test(t: PhantomData<Bar<'static>>) {
+fn bar_test(t: CtxRef<Hidden2, &'static mut GeometryCtx, Hidden2, Hidden2, Hidden2>) {
 }
 
 // impl<'v, V: Debug> HasFields for Ctx<'v, V> {
@@ -1452,32 +1484,32 @@ pub struct CtxRef<version, geometry, material, mesh, scene> {
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(version)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<'t, T: Debug> HasField<TS!(version)>
+for Ctx<'t, T> {
     type Index = hlist::N0;
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(geometry)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<'t, T: Debug> HasField<TS!(geometry)>
+for Ctx<'t, T> {
     type Index = hlist::N1;
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(material)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<'t, T: Debug> HasField<TS!(material)>
+for Ctx<'t, T> {
     type Index = hlist::N2;
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(mesh)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<'t, T: Debug> HasField<TS!(mesh)>
+for Ctx<'t, T> {
     type Index = hlist::N3;
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(scene)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<'t, T: Debug> HasField<TS!(scene)>
+for Ctx<'t, T> {
     type Index = hlist::N4;
 }
 
@@ -1768,6 +1800,41 @@ macro_rules! _Ctx {
 pub use _Ctx as Ctx;
 use crate::hlist::N0;
 
+#[macro_export]
+macro_rules! partial2 {
+    // < fs... > Ctx < ps... >
+    (< $($ts:tt)*)              => {           $crate::partial2! { @1 [] $($ts)* } };
+
+    // fs ...> Ctx <...>
+    (@1 $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial2! { @2 $n $fs          $($ts)* } };
+    (@1 [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::partial2! { @1    [$($fs)* $f] $($ts)* } };
+
+    // Ctx <...>
+    (@2 $n:ident $fs:tt)              => { $crate::partial2! { @4 $n $fs [] } };
+    (@2 $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial2! { @3 $n $fs [] $($ts)* } };
+
+    // <...>
+    (@3 $n:ident $fs:tt $ps:tt >)                      => { $crate::partial2! { @4 $n $fs $ps                   } };
+    (@3 $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::partial2! { @3 $n $fs [$($ps)* $p]  $($ts)* } };
+
+    // Production
+    (@4 $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial2! { @5 $n $fs [$($ps)*] AllHiddenFields<$n<$($ps)*>> } };
+    // (@4 $n:ident [$($fs:tt)*] $ps:tt) => { $n! { @1 $ps $($fs)* } };
+    (@5 $n:ident [$f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
+        $crate::partial2! { @5 $n [$($fs)*] [$($ps)*]
+            SetFieldAsRef<'_, $n<$($ps)*>, TS!($f), $($ts)*>
+        }
+    };
+    (@5 $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { RefWithFields< $n<$($ps)*> , $($ts)* > };
+}
+
+// type Foo<'t> = RefWithFields<
+//     Ctx<'static, usize>,
+//     SetFieldAsMut<'t, Ctx<'static, usize>, TS!(geometry),
+//         AllHiddenFields<Ctx<'static, usize>>
+//     >
+// >;
+
 pub fn test() {
     let version: usize = 0;
     let mut ctx = Ctx {
@@ -1799,33 +1866,33 @@ fn test2(mut ctx: CtxRef<&'_ mut &usize, &'_ mut GeometryCtx, &'_ mut MaterialCt
 //     // println!("yo")
 // }
 
-fn test5(ctx: partial!(<mut material>Ctx<'static, usize>)) {
+fn test5(ctx: partial2!(<geometry>Ctx<'static, usize>)) {
     // &*ctx.material;
     // println!("yo")
 }
 
-
-struct Bar1<T> {
-    x: T
-}
-
-struct Foo1<T> {
-    x: T,
-    y: T,
-}
-
-
-trait HasFirstFieldType {
-    type FirstFieldType;
-}
-
-impl<T> HasFirstFieldType for Foo1<T> {
-    type FirstFieldType = T;
-}
-
-type FirstFieldType<T> = <T as HasFirstFieldType>::FirstFieldType;
-
-impl<T, U> Bar1<U>
-where Foo1<T>: HasFirstFieldType<FirstFieldType = U> {
-
-}
+//
+// struct Bar1<T> {
+//     x: T
+// }
+//
+// struct Foo1<T> {
+//     x: T,
+//     y: T,
+// }
+//
+//
+// trait HasFirstFieldType {
+//     type FirstFieldType;
+// }
+//
+// impl<T> HasFirstFieldType for Foo1<T> {
+//     type FirstFieldType = T;
+// }
+//
+// type FirstFieldType<T> = <T as HasFirstFieldType>::FirstFieldType;
+//
+// impl<T, U> Bar1<U>
+// where Foo1<T>: HasFirstFieldType<FirstFieldType = U> {
+//
+// }
