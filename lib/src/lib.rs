@@ -1402,6 +1402,8 @@ impl<T> DerefMut for Field<T> {
 
 trait HasAllHiddenFields {
     type AllHiddenFields;
+    type AllRefFields<'t> where Self: 't;
+    type AllMutFields<'t> where Self: 't;
 }
 
 trait HasField<Field> {
@@ -1424,11 +1426,23 @@ for Ctx<'t, T> {
     type Output = CtxRef<version, geometry, material, mesh, scene>;
 }
 
-impl<'t, T: Debug> HasAllHiddenFields for Ctx<'t, T> {
+impl<'v, T: Debug> HasAllHiddenFields for Ctx<'v, T> {
     type AllHiddenFields = HList![Hidden2, Hidden2, Hidden2, Hidden2, Hidden2];
+    type AllRefFields<'t> = HList![&'t &'v T, &'t GeometryCtx, &'t MaterialCtx, &'t MeshCtx, &'t SceneCtx] where Self: 't;
+    type AllMutFields<'t> = HList![&'t mut &'v T, &'t mut GeometryCtx, &'t mut MaterialCtx, &'t mut MeshCtx, &'t mut SceneCtx] where Self: 't;
 }
 
+// pub struct Ctx<'v, V: Debug> {
+//     version: &'v V,
+//     pub geometry: GeometryCtx,
+//     pub material: MaterialCtx,
+//     pub mesh: MeshCtx,
+//     pub scene: SceneCtx,
+// }
+
 type AllHiddenFields<T> = <T as HasAllHiddenFields>::AllHiddenFields;
+type AllRefFields<'t, T> = <T as HasAllHiddenFields>::AllRefFields<'t>;
+type AllMutFields<'t, T> = <T as HasAllHiddenFields>::AllMutFields<'t>;
 //
 // type Foo<'t> = hlist::SetItemAtResult<
 //     HList![Hidden2, Hidden2, Hidden2, Hidden2, Hidden2],
@@ -1798,34 +1812,42 @@ macro_rules! _Ctx {
 
 // with the macro we can support impl as in ticket
 pub use _Ctx as Ctx;
-use crate::hlist::N0;
 
 #[macro_export]
-macro_rules! partial2 {
-    // < fs... > Ctx < ps... >
-    (< $($ts:tt)*)              => {           $crate::partial2! { @1 [] $($ts)* } };
+macro_rules! p {
+    // & 'glt < fs... > Ctx < ps... >
+    (& $glt:lifetime < $($ts:tt)*)              => {           $crate::p! { @1 $glt [] $($ts)* } };
+    (&               < $($ts:tt)*)              => {           $crate::p! { @1 '_   [] $($ts)* } };
 
     // fs ...> Ctx <...>
-    (@1 $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial2! { @2 $n $fs          $($ts)* } };
-    (@1 [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::partial2! { @1    [$($fs)* $f] $($ts)* } };
+    (@1 $glt:tt $fs:tt       > $n:ident $($ts:tt)*) => { $crate::p! { @2 $glt $n $fs          $($ts)* } };
+    (@1 $glt:tt [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::p! { @1 $glt    [$($fs)* $f] $($ts)* } };
 
     // Ctx <...>
-    (@2 $n:ident $fs:tt)              => { $crate::partial2! { @4 $n $fs [] } };
-    (@2 $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial2! { @3 $n $fs [] $($ts)* } };
+    (@2 $glt:tt $n:ident $fs:tt)              => { $crate::p! { @4 $glt $n $fs [] } };
+    (@2 $glt:tt $n:ident $fs:tt < $($ts:tt)*) => { $crate::p! { @3 $glt $n $fs [] $($ts)* } };
 
     // <...>
-    (@3 $n:ident $fs:tt $ps:tt >)                      => { $crate::partial2! { @4 $n $fs $ps                   } };
-    (@3 $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::partial2! { @3 $n $fs [$($ps)* $p]  $($ts)* } };
+    (@3 $glt:tt $n:ident $fs:tt $ps:tt >)                      => { $crate::p! { @4 $glt $n $fs $ps                   } };
+    (@3 $glt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::p! { @3 $glt $n $fs [$($ps)* $p]  $($ts)* } };
 
     // Production
-    (@4 $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial2! { @5 $n $fs [$($ps)*] AllHiddenFields<$n<$($ps)*>> } };
-    // (@4 $n:ident [$($fs:tt)*] $ps:tt) => { $n! { @1 $ps $($fs)* } };
-    (@5 $n:ident [$f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
-        $crate::partial2! { @5 $n [$($fs)*] [$($ps)*]
-            SetFieldAsRef<'_, $n<$($ps)*>, TS!($f), $($ts)*>
-        }
+    (@4 $glt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::p! { @5 $glt $n $fs [$($ps)*] AllHiddenFields<$n<$($ps)*>> } };
+
+    (@5 $glt:tt $n:ident [, $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
+        $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $($ts)* }
     };
-    (@5 $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { RefWithFields< $n<$($ps)*> , $($ts)* > };
+
+    (@5 $glt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::AllMutFields  <$lt,  $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::AllMutFields  <$glt, $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::AllRefFields  <$lt,  $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::AllRefFields  <$glt, $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,  $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$glt, $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,  $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$glt, $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
+
+    (@5 $glt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { $crate::RefWithFields< $n<$($ps)*> , $($ts)* > };
 }
 
 // type Foo<'t> = RefWithFields<
@@ -1866,7 +1888,7 @@ fn test2(mut ctx: CtxRef<&'_ mut &usize, &'_ mut GeometryCtx, &'_ mut MaterialCt
 //     // println!("yo")
 // }
 
-fn test5(ctx: partial2!(<geometry>Ctx<'static, usize>)) {
+fn test5<'t>(ctx: p!(&'t<mut *>Ctx<'_, usize>)) {
     // &*ctx.material;
     // println!("yo")
 }
