@@ -1260,6 +1260,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use crate::hlist::Nat;
 
 pub struct GeometryCtx {}
 pub struct MaterialCtx {}
@@ -1467,7 +1468,9 @@ trait HasAllHiddenFields {
 }
 
 trait HasField<Field> {
-    type Index;
+    type Type;
+    type Index: Nat;
+    fn take_field(self) -> Self::Type;
 }
 
 type FieldIndex<T, Field> = <T as HasField<Field>>::Index;
@@ -1529,21 +1532,7 @@ type SetFieldAsMut<'t, S, F, X> = SetFieldAsMutAt<'t, S, FieldIndex<S, F>, X>;
 type SetFieldAsRef<'t, S, F, X> = SetFieldAsRefAt<'t, S, FieldIndex<S, F>, X>;
 type SetFieldAsHidden<'t, S, F, X> = SetFieldAsHiddenAt<'t, FieldIndex<S, F>, X>;
 
-type Foo<'t> = RefWithFields<
-    Ctx<'static, usize>,
-    SetFieldAsMut<'t, Ctx<'static, usize>, TS!(geometry),
-        AllHiddenFields<Ctx<'static, usize>>
-    >
->;
 
-type Bar<'t> =  HList![Hidden2, &'t mut GeometryCtx, Hidden2, Hidden2, Hidden2];
-
-fn foo_test(t: Foo<'static>) {
-    bar_test(t)
-}
-
-fn bar_test(t: CtxRef<Hidden2, &'static mut GeometryCtx, Hidden2, Hidden2, Hidden2>) {
-}
 
 // impl<'v, V: Debug> HasFields for Ctx<'v, V> {
 //     type Fields = HList![&'v V, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
@@ -1560,33 +1549,113 @@ pub struct CtxRef<version, geometry, material, mesh, scene> {
 }
 
 #[allow(non_camel_case_types)]
+impl<version, geometry, material, mesh, scene> HasField<TS!(version)>
+for CtxRef<version, geometry, material, mesh, scene> {
+    type Type = Field<version>;
+    type Index = hlist::N0;
+    fn take_field(self) -> Self::Type {
+        self.version
+    }
+}
+
+#[allow(non_camel_case_types)]
+impl<version, geometry, material, mesh, scene> HasField<TS!(geometry)>
+for CtxRef<version, geometry, material, mesh, scene> {
+    type Type = Field<geometry>;
+    type Index = hlist::N1;
+    fn take_field(self) -> Self::Type {
+        self.geometry
+    }
+}
+
+#[allow(non_camel_case_types)]
+impl<version, geometry, material, mesh, scene> HasField<TS!(material)>
+for CtxRef<version, geometry, material, mesh, scene> {
+    type Type = Field<material>;
+    type Index = hlist::N2;
+    fn take_field(self) -> Self::Type {
+        self.material
+    }
+}
+
+#[allow(non_camel_case_types)]
+impl<version, geometry, material, mesh, scene> HasField<TS!(mesh)>
+for CtxRef<version, geometry, material, mesh, scene> {
+    type Type = Field<mesh>;
+    type Index = hlist::N3;
+    fn take_field(self) -> Self::Type {
+        self.mesh
+    }
+}
+
+#[allow(non_camel_case_types)]
+impl<version, geometry, material, mesh, scene> HasField<TS!(scene)>
+for CtxRef<version, geometry, material, mesh, scene> {
+    type Type = Field<scene>;
+    type Index = hlist::N4;
+    fn take_field(self) -> Self::Type {
+        self.scene
+    }
+}
+
+impl<A, T, Field> HasField<Field>
+for CtxRefWrapper<A, T>
+where T: HasField<Field> {
+    type Type = <T as HasField<Field>>::Type;
+    type Index = <T as HasField<Field>>::Index;
+    fn take_field(self) -> Self::Type {
+        self.value.take_field()
+    }
+}
+
+#[allow(non_camel_case_types)]
 impl<'t, T: Debug> HasField<TS!(version)>
 for Ctx<'t, T> {
+    type Type = &'t T;
     type Index = hlist::N0;
+    fn take_field(self) -> Self::Type {
+        self.version
+    }
 }
 
 #[allow(non_camel_case_types)]
 impl<'t, T: Debug> HasField<TS!(geometry)>
 for Ctx<'t, T> {
+    type Type = GeometryCtx;
     type Index = hlist::N1;
+    fn take_field(self) -> Self::Type {
+        self.geometry
+    }
 }
 
 #[allow(non_camel_case_types)]
 impl<'t, T: Debug> HasField<TS!(material)>
 for Ctx<'t, T> {
+    type Type = MaterialCtx;
     type Index = hlist::N2;
+    fn take_field(self) -> Self::Type {
+        self.material
+    }
 }
 
 #[allow(non_camel_case_types)]
 impl<'t, T: Debug> HasField<TS!(mesh)>
 for Ctx<'t, T> {
+    type Type = MeshCtx;
     type Index = hlist::N3;
+    fn take_field(self) -> Self::Type {
+        self.mesh
+    }
 }
 
 #[allow(non_camel_case_types)]
 impl<'t, T: Debug> HasField<TS!(scene)>
 for Ctx<'t, T> {
     type Index = hlist::N4;
+    type Type = SceneCtx;
+    fn take_field(self) -> Self::Type {
+        self.scene
+    }
 }
 
 
@@ -1618,11 +1687,13 @@ pub trait Acquire2<'s, This, Target> {
 
 impl<'s, T> Acquire2<'s, T, Hidden2> for AcquireMarker
 where FieldCloneMarker: FieldClone<'s, T> {
+    // type Rest = ();
     type Rest = <FieldCloneMarker as FieldClone<'s, T>>::Cloned;
     #[track_caller]
     fn acquire(this: &'s mut Field<T>) -> (Field<Hidden2>, Field<Self::Rest>) {
         (
             this.clone_as_hidden(),
+            // Field::new("mock", ())
             FieldCloneMarker::clone(this)
         )
     }
@@ -1630,6 +1701,7 @@ where FieldCloneMarker: FieldClone<'s, T> {
 
 impl<'s, 't, 'y, T> Acquire2<'s, &'t mut T, &'y mut T> for AcquireMarker
 where 's: 'y {
+    // type Rest = ();
     type Rest = Hidden2;
     #[track_caller]
     fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
@@ -1646,6 +1718,7 @@ where 's: 'y {
 
 impl<'s, 't, 'y, T: 's> Acquire2<'s, &'t mut T, &'y T> for AcquireMarker
 where 's: 'y {
+    // type Rest = ();
     type Rest = &'s T;
     #[track_caller]
     fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
@@ -1654,6 +1727,7 @@ where 's: 'y {
                 this.value_no_access_check,
                 this.usage_tracker.new_child(),
             ),
+            // Field::new("mock", ())
             Field::cons(
                 this.value_no_access_check,
                 this.usage_tracker.clone(),
@@ -1664,6 +1738,7 @@ where 's: 'y {
 
 impl<'s, 't, 'y, T> Acquire2<'s, &'t T, &'y T> for AcquireMarker
 where 't: 'y {
+    // type Rest = ();
     type Rest = &'t T;
     #[track_caller]
     fn acquire(this: &'s mut Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
@@ -1672,6 +1747,7 @@ where 't: 'y {
                 this.value_no_access_check,
                 this.usage_tracker.new_child(),
             ),
+            // Field::new("mock", ())
             FieldCloneMarker::clone(this)
         )
     }
@@ -1693,21 +1769,21 @@ where T: Split2<'x, Target> + FieldsUsageMarker {
     }
 }
 
-pub trait Split2Helper {
+pub trait Split2Helper<'x> {
     #[track_caller]
-    fn split2<'x, Target>(&'x mut self) -> (Target, Self::Rest) where Self: Split2<'x, Target> {
+    fn split2<Target>(&'x mut self) -> (Target, Self::Rest) where Self: Split2<'x, Target> {
         self.split2_impl()
     }
 }
-impl<T> Split2Helper for T {}
+impl<'t, T> Split2Helper<'t> for T {}
 
-pub trait Partial2Helper {
+pub trait Partial2Helper<'x> {
     #[track_caller]
-    fn partial_borrow2<'x, Target>(&'x mut self) -> Target where Self: Split2<'x, Target> {
+    fn partial_borrow2<Target>(&'x mut self) -> Target where Self: Split2<'x, Target> {
         self.split2_impl().0
     }
 }
-impl<T> Partial2Helper for T {}
+impl<'t, T> Partial2Helper<'t> for T {}
 
 
 impl<'x, T, version, geometry, material, mesh, scene, version2, geometry2, material2, mesh2, scene2, version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>
@@ -1752,6 +1828,66 @@ type Rest = CtxRefWrapper<T, CtxRef<version2Rest, geometry2Rest, material2Rest, 
 }
 
 
+// impl< S, T> CtxRefWrapper<S, T> {
+//     #[track_caller]
+//     fn extract<'x, Field>(&'x mut self) -> (
+//     CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<Self>>>>>
+//     // hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<Self>>>
+//     )
+//     where
+//         T: HasFields,
+//         S: HasField<Field> + HasAllHiddenFields,
+//         AllHiddenFields<S>: hlist::SetItemAt<FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<T>>>,
+//         Fields<T>: hlist::Index<FieldIndex<S, Field>>,
+//         Self: Split2<'x, CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<T>>>>>>,
+//         <S as HasAllHiddenFields>::AllHiddenFields: hlist::SetItemAt<FieldIndex<S, Field>,
+//             hlist::ItemAt<FieldIndex<S, Field>, Fields<T>>
+//         >,
+//         S: HasRefWithFields<hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<T>>>>,
+//
+//     {
+//         self.split2().0
+//     }
+// }
+
+
+impl< S, T> CtxRefWrapper<S, T> {
+    #[track_caller]
+    fn extract<'y, 'x, Field>(&'x mut self) -> (
+        <CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>> as HasField<Field>>::Type,
+        <Self as Split2<'x, CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>>>>::Rest
+    )
+    where
+        T: HasFields,
+        S: HasField<Field> + HasAllHiddenFields,
+        AllHiddenFields<S>: hlist::SetItemAt<FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>,
+        AllMutFields<'y, S>: hlist::Index<FieldIndex<S, Field>>,
+        Self: Split2<'x, CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>>>,
+        <S as HasAllHiddenFields>::AllHiddenFields: hlist::SetItemAt<FieldIndex<S, Field>,
+            hlist::ItemAt<FieldIndex<S, Field>, AllMutFields<'y, S>>
+        >,
+        S: HasRefWithFields<hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>,
+        CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>>: HasField<Field>
+    // HasField
+    {
+        let split = self.split2();
+        (split.0.take_field(), split.1)
+    }
+}
+
+
+impl<'s, 't, 'x, 'y, 'a, T: Debug, version, material, mesh, scene>
+CtxRefWrapper<Ctx<'s, T>, CtxRef<version, &'t mut GeometryCtx, material, mesh, scene>>
+where 'a: 'x,
+    Self: Split2<'x, CtxRefWrapper<Ctx<'s, T>, CtxRef<Hidden2, &'a mut GeometryCtx, Hidden2, Hidden2, Hidden2>>> {
+    fn extract_geometry(&'x mut self) -> (Field<&mut GeometryCtx>, <Self as Split2<'x, CtxRefWrapper<Ctx<'s, T>, CtxRef<Hidden2, &'a mut GeometryCtx, Hidden2, Hidden2, Hidden2>>>>::Rest) {
+        let split = self.split2();
+        let x0 = split.0;
+        let x1 = split.1;
+        (x0.value.geometry, x1)
+    }
+}
+
 
 #[allow(non_camel_case_types)]
 impl<version, geometry, material, mesh, scene> FieldsUsageMarker
@@ -1773,27 +1909,7 @@ PartialInferenceGuide<
 > for CtxRef<version,        geometry,        material,        mesh,        scene> {}
 
 
-// #[allow(non_camel_case_types)]
-// impl<'t, 'v, V, __version, __geometry, __material, __mesh, __scene>
-// AsRefs<'t, CtxRef<__version, __geometry, __material, __mesh, __scene>> for Ctx<'v, V>
-// where
-//     V:           Debug,
-//     &'v V:       RefCast<'t, __version>,
-//     GeometryCtx: RefCast<'t, __geometry>,
-//     MaterialCtx: RefCast<'t, __material>,
-//     MeshCtx:     RefCast<'t, __mesh>,
-//     SceneCtx:    RefCast<'t, __scene>,
-// {
-//     fn as_refs_impl(&'t mut self) -> CtxRef<__version, __geometry, __material, __mesh, __scene> {
-//         CtxRef {
-//             version:  RefCast::ref_cast(&mut self.version),
-//             geometry: RefCast::ref_cast(&mut self.geometry),
-//             material: RefCast::ref_cast(&mut self.material),
-//             mesh:     RefCast::ref_cast(&mut self.mesh),
-//             scene:    RefCast::ref_cast(&mut self.scene),
-//         }
-//     }
-// }
+
 
 impl<'v, V> Ctx<'v, V>
 where V: Debug
@@ -1822,6 +1938,11 @@ impl<'v, V: Debug> HasFields for Ctx<'v, V> {
 impl<version, geometry, material, mesh, scene>
 HasFields for CtxRef<version, geometry, material, mesh, scene> {
     type Fields = HList![version, geometry, material, mesh, scene];
+}
+
+impl<S, T> HasFields for CtxRefWrapper<S, T>
+where T: HasFields {
+    type Fields = T::Fields;
 }
 
 #[allow(non_camel_case_types)]
@@ -1893,11 +2014,15 @@ pub fn test() {
 
 }
 
-fn _test(mut ctx: Ctx<'_, usize>) {
-    let _ctx_ref_mut = ctx.as_refs_mut();
-}
-
-fn test2(mut ctx: p!(&<mut *>Ctx<'_, usize>)) {
+fn test2<'s, 't>(mut ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
+    {
+        // let x = ctx.extract::<TS!(geometry)>();
+        let y = ctx.extract_geometry();
+    }
+    {
+        let x = ctx.split2::<p!(&<'_ mut geometry>Ctx<'s, usize>)>();
+        // let x = ctx.split2::<CtxRefWrapper<Ctx<'s, usize>, RefWithFields<Ctx<'s, usize>, SetFieldAsMut<'p, Ctx<'s, usize>, TS![geometry], AllHiddenFields<Ctx<'s, usize>>>>>>();
+    }
     // _test4(ctx.partial_borrow())
     test5(ctx.partial_borrow2());
 }
