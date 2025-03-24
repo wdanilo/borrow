@@ -893,20 +893,7 @@
 //! <br/>
 //! <br/>
 
-pub mod doc;
-pub mod hlist;
-pub mod reflect;
 
-use hlist::Cons;
-use hlist::Nil;
-use std::fmt::{format, Debug};
-
-pub use reflect::*;
-pub use borrow_macro::*;
-
-
-
-use tstr::TS;
 
 
 // // ==============
@@ -1256,6 +1243,19 @@ use tstr::TS;
 
 // ===================
 
+pub mod doc;
+pub mod hlist;
+pub mod reflect;
+
+use std::fmt::Debug;
+
+pub use reflect::*;
+pub use borrow_macro::*;
+
+
+
+pub use tstr::TS as Str;
+
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -1464,27 +1464,6 @@ type FieldsAsHidden<T> = <T as HasFieldsExt>::FieldsAsHidden;
 type FieldsAsRef<'t, T> = <T as HasFieldsExt>::FieldsAsRef<'t>;
 type FieldsAsMut<'t, T> = <T as HasFieldsExt>::FieldsAsMut<'t>;
 
-
-// =======================
-// === AsRefWithFields ===
-// =======================
-
-trait AsRefWithFields<F> {
-    type Output;
-}
-
-type RefWithFields<T, F> = <T as AsRefWithFields<F>>::Output;
-
-// ====================
-// === HasFieldsExt ===
-// ====================
-
-impl<'v, T: Debug> HasFieldsExt for Ctx<'v, T> {
-    type FieldsAsHidden = HList![Hidden, Hidden, Hidden, Hidden, Hidden];
-    type FieldsAsRef<'t> = HList![&'t &'v T, &'t GeometryCtx, &'t MaterialCtx, &'t MeshCtx, &'t SceneCtx] where Self: 't;
-    type FieldsAsMut<'t> = HList![&'t mut &'v T, &'t mut GeometryCtx, &'t mut MaterialCtx, &'t mut MeshCtx, &'t mut SceneCtx] where Self: 't;
-}
-
 pub type SetFieldAsMutAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
     &'t mut hlist::ItemAt<N, Fields<S>>
 >;
@@ -1501,6 +1480,81 @@ pub type SetFieldAsMut    <'t, S, F, X> = SetFieldAsMutAt<'t, S, FieldIndex<S, F
 pub type SetFieldAsRef    <'t, S, F, X> = SetFieldAsRefAt<'t, S, FieldIndex<S, F>, X>;
 pub type SetFieldAsHidden <'t, S, F, X> = SetFieldAsHiddenAt<'t, FieldIndex<S, F>, X>;
 
+// =======================
+// === AsRefWithFields ===
+// =======================
+
+trait AsRefWithFields<F> {
+    type Output;
+}
+
+type RefWithFields<T, F> = <T as AsRefWithFields<F>>::Output;
+
+// ======================
+// === ExplicitParams ===
+// ======================
+
+#[repr(transparent)]
+struct ExplicitParams<Args, T> {
+    value: T,
+    phantom_data: PhantomData<Args>
+}
+
+impl<Args, T> ExplicitParams<Args, T> {
+    fn new(value: T) -> Self {
+        Self {
+            value,
+            phantom_data: PhantomData
+        }
+    }
+}
+
+impl<Args, T> Deref for ExplicitParams<Args, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<Args, T> DerefMut for ExplicitParams<Args, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+// === HasFields ===
+
+impl<S, T> HasFields for ExplicitParams<S, T>
+where T: HasFields {
+    type Fields = T::Fields;
+}
+
+impl<A, T, Field> HasField<Field>
+for ExplicitParams<A, T>
+where T: HasField<Field> {
+    type Type = <T as HasField<Field>>::Type;
+    type Index = <T as HasField<Field>>::Index;
+    fn take_field(self) -> Self::Type {
+        self.value.take_field()
+    }
+}
+
+impl<Args, T: MarkAllFieldsAsUsed> MarkAllFieldsAsUsed for ExplicitParams<Args, T> {
+    fn mark_all_fields_as_used(&self) {
+        self.value.mark_all_fields_as_used();
+    }
+}
+
+impl<'x, S, T, T2> Split<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T>
+where T: Split<'x, T2> {
+    type Rest = ExplicitParams<S, <T as Split<'x, T2>>::Rest>;
+    #[track_caller]
+    fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
+        let (value, rest) = self.value.split_impl();
+        (ExplicitParams::new(value), ExplicitParams::new(rest))
+    }
+}
+
 // ==============
 // === Hidden ===
 // ==============
@@ -1509,20 +1563,9 @@ pub type SetFieldAsHidden <'t, S, F, X> = SetFieldAsHiddenAt<'t, FieldIndex<S, F
 #[derive(Debug, Copy, Clone)]
 pub struct Hidden;
 
-impl Hidden {
-    fn is_used(&self) -> bool {
-        true
-    }
-}
-
 // ===============
 // === Acquire ===
 // ===============
-
-// struct Field
-
-#[repr(transparent)]
-struct FieldRefMut<'t, T> (&'t mut Field<T>);
 
 struct AcquireMarker;
 
@@ -1626,7 +1669,6 @@ pub trait PartialHelper<'x> {
 }
 impl<'t, T> PartialHelper<'t> for T {}
 
-
 // ===========
 // === GEN ===
 // ===========
@@ -1644,26 +1686,45 @@ pub struct Ctx<'v, V: Debug> {
     pub scene: SceneCtx,
 }
 
+impl<'v, V: Debug> HasFields for Ctx<'v, V> {
+    type Fields = HList![&'v V, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
+}
 
-#[repr(C)]
+impl<'v, T: Debug> HasFieldsExt for Ctx<'v, T> {
+    type FieldsAsHidden = HList![Hidden, Hidden, Hidden, Hidden, Hidden];
+    type FieldsAsRef<'t> = HList![&'t &'v T, &'t GeometryCtx, &'t MaterialCtx, &'t MeshCtx, &'t SceneCtx] where Self: 't;
+    type FieldsAsMut<'t> = HList![&'t mut &'v T, &'t mut GeometryCtx, &'t mut MaterialCtx, &'t mut MeshCtx, &'t mut SceneCtx] where Self: 't;
+}
+
+
+// === CtxRef ===
+
 #[allow(non_camel_case_types)]
-pub struct CtxRef<version, geometry, material, mesh, scene> {
+pub struct CtxRef<S, version, geometry, material, mesh, scene> {
     pub version: Field<version>,
     pub geometry: Field<geometry>,
     pub material: Field<material>,
     pub mesh: Field<mesh>,
     pub scene: Field<scene>,
+    marker: PhantomData<S>
+}
+
+#[allow(non_camel_case_types)]
+impl<S, version, geometry, material, mesh, scene>
+HasFields for CtxRef<S, version, geometry, material, mesh, scene> {
+    type Fields = HList![version, geometry, material, mesh, scene];
 }
 
 impl<'t, T: Debug, version, geometry, material, mesh, scene>
 AsRefWithFields<HList![version, geometry, material, mesh, scene]>
 for Ctx<'t, T> {
-    type Output = CtxRef<version, geometry, material, mesh, scene>;
+    type Output = CtxRef<Ctx<'t, T>, version, geometry, material, mesh, scene>;
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(version)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<S, version, geometry, material, mesh, scene>
+HasField<Str!(version)>
+for CtxRef<S, version, geometry, material, mesh, scene> {
     type Type = Field<version>;
     type Index = hlist::N0;
     fn take_field(self) -> Self::Type {
@@ -1672,8 +1733,9 @@ for CtxRef<version, geometry, material, mesh, scene> {
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(geometry)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<S, version, geometry, material, mesh, scene>
+HasField<Str!(geometry)>
+for CtxRef<S, version, geometry, material, mesh, scene> {
     type Type = Field<geometry>;
     type Index = hlist::N1;
     fn take_field(self) -> Self::Type {
@@ -1682,8 +1744,9 @@ for CtxRef<version, geometry, material, mesh, scene> {
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(material)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<S, version, geometry, material, mesh, scene>
+HasField<Str!(material)>
+for CtxRef<S, version, geometry, material, mesh, scene> {
     type Type = Field<material>;
     type Index = hlist::N2;
     fn take_field(self) -> Self::Type {
@@ -1692,8 +1755,9 @@ for CtxRef<version, geometry, material, mesh, scene> {
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(mesh)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<S, version, geometry, material, mesh, scene>
+HasField<Str!(mesh)>
+for CtxRef<S, version, geometry, material, mesh, scene> {
     type Type = Field<mesh>;
     type Index = hlist::N3;
     fn take_field(self) -> Self::Type {
@@ -1702,8 +1766,9 @@ for CtxRef<version, geometry, material, mesh, scene> {
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> HasField<TS!(scene)>
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<S, version, geometry, material, mesh, scene>
+HasField<Str!(scene)>
+for CtxRef<S, version, geometry, material, mesh, scene> {
     type Type = Field<scene>;
     type Index = hlist::N4;
     fn take_field(self) -> Self::Type {
@@ -1711,18 +1776,8 @@ for CtxRef<version, geometry, material, mesh, scene> {
     }
 }
 
-impl<A, T, Field> HasField<Field>
-for CtxRefWrapper<A, T>
-where T: HasField<Field> {
-    type Type = <T as HasField<Field>>::Type;
-    type Index = <T as HasField<Field>>::Index;
-    fn take_field(self) -> Self::Type {
-        self.value.take_field()
-    }
-}
-
 #[allow(non_camel_case_types)]
-impl<'t, T: Debug> HasField<TS!(version)>
+impl<'t, T: Debug> HasField<Str!(version)>
 for Ctx<'t, T> {
     type Type = &'t T;
     type Index = hlist::N0;
@@ -1732,7 +1787,7 @@ for Ctx<'t, T> {
 }
 
 #[allow(non_camel_case_types)]
-impl<'t, T: Debug> HasField<TS!(geometry)>
+impl<'t, T: Debug> HasField<Str!(geometry)>
 for Ctx<'t, T> {
     type Type = GeometryCtx;
     type Index = hlist::N1;
@@ -1742,7 +1797,7 @@ for Ctx<'t, T> {
 }
 
 #[allow(non_camel_case_types)]
-impl<'t, T: Debug> HasField<TS!(material)>
+impl<'t, T: Debug> HasField<Str!(material)>
 for Ctx<'t, T> {
     type Type = MaterialCtx;
     type Index = hlist::N2;
@@ -1752,7 +1807,7 @@ for Ctx<'t, T> {
 }
 
 #[allow(non_camel_case_types)]
-impl<'t, T: Debug> HasField<TS!(mesh)>
+impl<'t, T: Debug> HasField<Str!(mesh)>
 for Ctx<'t, T> {
     type Type = MeshCtx;
     type Index = hlist::N3;
@@ -1762,7 +1817,7 @@ for Ctx<'t, T> {
 }
 
 #[allow(non_camel_case_types)]
-impl<'t, T: Debug> HasField<TS!(scene)>
+impl<'t, T: Debug> HasField<Str!(scene)>
 for Ctx<'t, T> {
     type Index = hlist::N4;
     type Type = SceneCtx;
@@ -1772,8 +1827,8 @@ for Ctx<'t, T> {
 }
 
 impl<'x, T, version, geometry, material, mesh, scene, version2, geometry2, material2, mesh2, scene2, version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>
-Split<'x, CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>>
-for CtxRefWrapper<T, CtxRef<version, geometry, material, mesh, scene>>
+Split<'x, CtxRef<T, version2, geometry2, material2, mesh2, scene2>>
+for CtxRef<T, version, geometry, material, mesh, scene>
 where
     AcquireMarker: Acquire<'x, version, version2, Rest=version2Rest>,
     AcquireMarker: Acquire<'x, geometry, geometry2, Rest=geometry2Rest>,
@@ -1781,53 +1836,54 @@ where
     AcquireMarker: Acquire<'x, mesh, mesh2, Rest=mesh2Rest>,
     AcquireMarker: Acquire<'x, scene, scene2, Rest=scene2Rest>,
 {
-type Rest = CtxRefWrapper<T, CtxRef<version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>>;
+type Rest = CtxRef<T, version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>;
     #[track_caller]
-    fn split_impl(&'x mut self) -> (CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>, Self::Rest) {
-        let (version, versionRest) = AcquireMarker::acquire(&mut self.value.version);
-        let (geometry, geometryRest) = AcquireMarker::acquire(&mut self.value.geometry);
-        let (material, materialRest) = AcquireMarker::acquire(&mut self.value.material);
-        let (mesh, meshRest) = AcquireMarker::acquire(&mut self.value.mesh);
-        let (scene, sceneRest) = AcquireMarker::acquire(&mut self.value.scene);
+    fn split_impl(&'x mut self) -> (CtxRef<T, version2, geometry2, material2, mesh2, scene2>, Self::Rest) {
+        let (version, versionRest) = AcquireMarker::acquire(&mut self.version);
+        let (geometry, geometryRest) = AcquireMarker::acquire(&mut self.geometry);
+        let (material, materialRest) = AcquireMarker::acquire(&mut self.material);
+        let (mesh, meshRest) = AcquireMarker::acquire(&mut self.mesh);
+        let (scene, sceneRest) = AcquireMarker::acquire(&mut self.scene);
         (
-            CtxRefWrapper::new (
-                CtxRef {
-                    version,
-                    geometry,
-                    material,
-                    mesh,
-                    scene,
-                }
-            ),
-            CtxRefWrapper::new (
-                CtxRef {
-                    version: versionRest,
-                    geometry: geometryRest,
-                    material: materialRest,
-                    mesh: meshRest,
-                    scene: sceneRest,
-                }
-            )
+            CtxRef {
+                version,
+                geometry,
+                material,
+                mesh,
+                scene,
+                marker: PhantomData
+            },
+            CtxRef {
+                version: versionRest,
+                geometry: geometryRest,
+                material: materialRest,
+                mesh: meshRest,
+                scene: sceneRest,
+                marker: PhantomData
+            }
         )
     }
 }
 
-impl<'s, 't, 'x, 'y, 'a, T: Debug, version, material, mesh, scene>
-CtxRefWrapper<Ctx<'s, T>, CtxRef<version, &'t mut GeometryCtx, material, mesh, scene>>
+impl<'t, 'x, 'y, 'a, S, version, material, mesh, scene>
+CtxRef<S, version, &'t mut GeometryCtx, material, mesh, scene>
 where 'a: 'x,
-    Self: Split<'x, CtxRefWrapper<Ctx<'s, T>, CtxRef<Hidden, &'a mut GeometryCtx, Hidden, Hidden, Hidden>>> {
-    fn extract_geometry(&'x mut self) -> (Field<&mut GeometryCtx>, <Self as Split<'x, CtxRefWrapper<Ctx<'s, T>, CtxRef<Hidden, &'a mut GeometryCtx, Hidden, Hidden, Hidden>>>>::Rest) {
+    Self: Split<'x, CtxRef<S, Hidden, &'a mut GeometryCtx, Hidden, Hidden, Hidden>> {
+    fn extract_geometry(&'x mut self) -> (
+        Field<&mut GeometryCtx>,
+        ExplicitParams<S, <Self as Split<'x, CtxRef<S, Hidden, &'a mut GeometryCtx, Hidden, Hidden, Hidden>>>::Rest>
+    ) {
         let split = self.split();
         let x0 = split.0;
         let x1 = split.1;
-        (x0.value.geometry, x1)
+        (x0.geometry, ExplicitParams::new(x1))
     }
 }
 
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> MarkAllFieldsAsUsed
-for CtxRef<version, geometry, material, mesh, scene> {
+impl<S, version, geometry, material, mesh, scene> MarkAllFieldsAsUsed
+for CtxRef<S, version, geometry, material, mesh, scene> {
     fn mark_all_fields_as_used(&self) {
         self.version.mark_as_used();
         self.geometry.mark_as_used();
@@ -1838,38 +1894,26 @@ for CtxRef<version, geometry, material, mesh, scene> {
 }
 
 impl<'v, V> Ctx<'v, V>
-where V: Debug
-{
+where V: Debug {
     #[track_caller]
-    pub fn as_refs_mut(&mut self) -> AllFieldsUsed<CtxRefWrapper<Ctx<'v, V>, CtxRef<&mut &'v V, &mut GeometryCtx, &mut MaterialCtx, &mut MeshCtx, &mut SceneCtx>>> {
+    pub fn as_refs_mut(&mut self) -> AllFieldsUsed<ExplicitParams<Self, CtxRef<Self, &mut &'v V, &mut GeometryCtx, &mut MaterialCtx, &mut MeshCtx, &mut SceneCtx>>> {
         AllFieldsUsed::new(
-            CtxRefWrapper::new(
+            ExplicitParams::new(
                 CtxRef {
                     version:  Field::new("version", &mut self.version),
                     geometry: Field::new("geometry", &mut self.geometry),
                     material: Field::new("material", &mut self.material),
                     mesh:     Field::new("mesh", &mut self.mesh),
                     scene:    Field::new("scene", &mut self.scene),
+                    marker: PhantomData,
                 }
             )
         )
     }
 }
 
-impl<'v, V: Debug> HasFields for Ctx<'v, V> {
-    type Fields = HList![&'v V, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
-}
 
-#[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene>
-HasFields for CtxRef<version, geometry, material, mesh, scene> {
-    type Fields = HList![version, geometry, material, mesh, scene];
-}
 
-impl<S, T> HasFields for CtxRefWrapper<S, T>
-where T: HasFields {
-    type Fields = T::Fields;
-}
 
 // #[allow(non_camel_case_types)]
 // impl<version_target, geometry_target, material_target, mesh_target, scene_target,
@@ -1909,17 +1953,17 @@ macro_rules! p {
     (@5 $glt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$glt, $n<$($ps)*>> } };
     (@5 $glt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$lt,  $n<$($ps)*>> } };
     (@5 $glt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$glt, $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,  $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
-    (@5 $glt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$glt, $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
-    (@5 $glt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,  $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
-    (@5 $glt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$glt, $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,  $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$glt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,  $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$glt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
 
-    (@5 $glt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { CtxRefWrapper<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
+    (@5 $glt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { $crate::ExplicitParams<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
 }
 
 // type Foo<'t> = RefWithFields<
 //     Ctx<'static, usize>,
-//     SetFieldAsMut<'t, Ctx<'static, usize>, TS!(geometry),
+//     SetFieldAsMut<'t, Ctx<'static, usize>, Str!(geometry),
 //         FieldsAsHidden<Ctx<'static, usize>>
 //     >
 // >;
@@ -1942,12 +1986,12 @@ pub fn test() {
 
 fn test2<'s, 't>(mut ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
     {
-        // let x = ctx.extract::<TS!(geometry)>();
+        // let x = ctx.extract::<Str!(geometry)>();
         let y = ctx.extract_geometry();
     }
     {
         let x = ctx.split::<p!(&<'_ mut geometry>Ctx<'s, usize>)>();
-        // let x = ctx.split::<CtxRefWrapper<Ctx<'s, usize>, RefWithFields<Ctx<'s, usize>, SetFieldAsMut<'p, Ctx<'s, usize>, TS![geometry], FieldsAsHidden<Ctx<'s, usize>>>>>>();
+        // let x = ctx.split::<ExplicitParams<Ctx<'s, usize>, RefWithFields<Ctx<'s, usize>, SetFieldAsMut<'p, Ctx<'s, usize>, Str![geometry], FieldsAsHidden<Ctx<'s, usize>>>>>>();
     }
     // _test4(ctx.partial_borrow())
     test5(ctx.partial_borrow());
@@ -1964,38 +2008,8 @@ fn test5<'t>(ctx: p!(&'t<mut geometry>Ctx<'_, usize>)) {
     // println!("yo")
 }
 
-struct CtxRefWrapper<Args, T> {
-    value: T,
-    phantom_data: PhantomData<Args>
-}
 
-impl<Args, T> CtxRefWrapper<Args, T> {
-    fn new(value: T) -> Self {
-        Self {
-            value,
-            phantom_data: PhantomData
-        }
-    }
-}
 
-impl<Args, T> Deref for CtxRefWrapper<Args, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.value
-    }
-}
-
-impl<Args, T> DerefMut for CtxRefWrapper<Args, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
-}
-
-impl<Args, T: MarkAllFieldsAsUsed> MarkAllFieldsAsUsed for CtxRefWrapper<Args, T> {
-    fn mark_all_fields_as_used(&self) {
-        self.value.mark_all_fields_as_used();
-    }
-}
 
 
 impl<'t, T: Debug> p!(&<>Ctx<'t, T>) {
