@@ -1424,33 +1424,35 @@ impl<T> DerefMut for Field<T> {
     }
 }
 
-pub trait FieldClone<'s> {
+pub struct FieldCloneMarker;
+
+pub trait FieldClone<'s, This> {
     type Cloned;
-    fn clone(&'s mut self) -> Self::Cloned;
+    fn clone(this: &'s mut Field<This>) -> Field<Self::Cloned>;
 }
 
 
-impl<'s> FieldClone<'s> for Field<Hidden2> {
-    type Cloned = Field<Hidden2>;
+impl<'s> FieldClone<'s, Hidden2> for FieldCloneMarker {
+    type Cloned = Hidden2;
     #[track_caller]
-    fn clone(&'s mut self) -> Self::Cloned {
-        Field::cons(self.value_no_access_check, self.usage_tracker.clone())
+    fn clone(this: &'s mut Field<Hidden2>) -> Field<Self::Cloned> {
+        Field::cons(this.value_no_access_check, this.usage_tracker.clone())
     }
 }
 
-impl<'s, 't, T> FieldClone<'s> for Field<&'t T> {
-    type Cloned = Field<&'t T>;
+impl<'s, 't, T> FieldClone<'s, &'t T> for FieldCloneMarker {
+    type Cloned = &'t T;
     #[track_caller]
-    fn clone(&'s mut self) -> Self::Cloned {
-        Field::cons(self.value_no_access_check, self.usage_tracker.clone())
+    fn clone(this: &'s mut Field<&'t T>) -> Field<Self::Cloned> {
+        Field::cons(this.value_no_access_check, this.usage_tracker.clone())
     }
 }
 
-impl<'s, 't, T: 's> FieldClone<'s> for Field<&'t mut T> {
-    type Cloned = Field<&'s mut T>;
+impl<'s, 't, T: 's> FieldClone<'s, &'t mut T> for FieldCloneMarker {
+    type Cloned = &'s mut T;
     #[track_caller]
-    fn clone(&'s mut self) -> Self::Cloned {
-        Field::cons(self.value_no_access_check, self.usage_tracker.clone())
+    fn clone(this: &'s mut Field<&'t mut T>) -> Field<Self::Cloned> {
+        Field::cons(this.value_no_access_check, this.usage_tracker.clone())
     }
 }
 
@@ -1605,120 +1607,127 @@ impl Hidden2 {
     }
 }
 
-pub trait Acquire2<'s, Target> {
+struct AcquireMarker;
+
+pub trait Acquire2<'s, This, Target> {
     type Rest;
-    fn acquire(&'s mut self) -> (Target, Self::Rest);
+    fn acquire(this: &'s mut Field<This>) -> (Field<Target>, Field<Self::Rest>);
 }
 
-type AcquireRest<'s, This, Target> = <This as Acquire2<'s, Target>>::Rest;
 
 
-impl<'s, T> Acquire2<'s, Field<Hidden2>> for Field<T>
-where Field<T>: FieldClone<'s> {
-    type Rest = <Field<T> as FieldClone<'s>>::Cloned;
+impl<'s, T> Acquire2<'s, T, Hidden2> for AcquireMarker
+where FieldCloneMarker: FieldClone<'s, T> {
+    type Rest = <FieldCloneMarker as FieldClone<'s, T>>::Cloned;
     #[track_caller]
-    fn acquire(&'s mut self) -> (Field<Hidden2>, Self::Rest) {
+    fn acquire(this: &'s mut Field<T>) -> (Field<Hidden2>, Field<Self::Rest>) {
         (
-            self.clone_as_hidden(),
-            self.clone(),
+            this.clone_as_hidden(),
+            FieldCloneMarker::clone(this)
         )
     }
 }
 
-impl<'s, 't, 'y, T> Acquire2<'s, Field<&'y mut T>> for Field<&'t mut T> where 's: 'y {
-    type Rest = Field<Hidden2>;
+impl<'s, 't, 'y, T> Acquire2<'s, &'t mut T, &'y mut T> for AcquireMarker
+where 's: 'y {
+    type Rest = Hidden2;
     #[track_caller]
-    fn acquire(&'s mut self) -> (Field<&'y mut T>, Self::Rest) {
-        let rest = self.clone_as_hidden();
+    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
+        let rest = this.clone_as_hidden();
         (
             Field::cons(
-                self.value_no_access_check,
-                self.usage_tracker.new_child(),
+                this.value_no_access_check,
+                this.usage_tracker.new_child(),
             ),
             rest
         )
     }
 }
 
-impl<'s, 't, 'y, T: 's> Acquire2<'s, Field<&'y T>> for Field<&'t mut T>
+impl<'s, 't, 'y, T: 's> Acquire2<'s, &'t mut T, &'y T> for AcquireMarker
 where 's: 'y {
-    type Rest = Field<&'s T>;
+    type Rest = &'s T;
     #[track_caller]
-    fn acquire(&'s mut self) -> (Field<&'y T>, Self::Rest) {
+    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
         (
             Field::cons(
-                self.value_no_access_check,
-                self.usage_tracker.new_child(),
+                this.value_no_access_check,
+                this.usage_tracker.new_child(),
             ),
             Field::cons(
-                self.value_no_access_check,
-                self.usage_tracker.clone(),
+                this.value_no_access_check,
+                this.usage_tracker.clone(),
             ),
         )
     }
 }
 
-impl<'s, 't, 'y, T> Acquire2<'s, Field<&'y T>> for Field<&'t T>
+impl<'s, 't, 'y, T> Acquire2<'s, &'t T, &'y T> for AcquireMarker
 where 't: 'y {
-    type Rest = Field<&'t T>;
+    type Rest = &'t T;
     #[track_caller]
-    fn acquire(&'s mut self) -> (Field<&'y T>, Self::Rest) {
+    fn acquire(this: &'s mut Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
         (
             Field::cons(
-                self.value_no_access_check,
-                self.usage_tracker.new_child(),
+                this.value_no_access_check,
+                this.usage_tracker.new_child(),
             ),
-            self.clone()
+            FieldCloneMarker::clone(this)
         )
     }
 }
 
-#[allow(non_camel_case_types)]
-impl<T, version, geometry, material, mesh, scene>
-CtxRefWrapper<T, CtxRef<version, geometry, material, mesh, scene>> {
+
+
+pub trait Split2<'x, Target> {
+    type Rest;
+    fn split2_impl(&'x mut self) -> (Target, Self::Rest);
+}
+
+impl<'x, Target, T> Split2<'x, Target> for AllFieldsUsed<T>
+where T: Split2<'x, Target> + FieldsUsageMarker {
+    type Rest = <T as Split2<'x, Target>>::Rest;
     #[track_caller]
-    pub fn partial_borrow2<'x, version2, geometry2, material2, mesh2, scene2>
-    (&'x mut self) -> CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>
-    where
-        Field<version>: Acquire2<'x, Field<version2>>,
-        Field<geometry>: Acquire2<'x, Field<geometry2>>,
-        Field<material>: Acquire2<'x, Field<material2>>,
-        Field<mesh>: Acquire2<'x, Field<mesh2>>,
-        Field<scene>: Acquire2<'x, Field<scene2>>
-    {
-        CtxRefWrapper::new (
-            CtxRef {
-                version: self.value.version.acquire().0,
-                geometry: self.value.geometry.acquire().0,
-                material: self.value.material.acquire().0,
-                mesh: self.value.mesh.acquire().0,
-                scene: self.value.scene.acquire().0,
-            }
-        )
+    fn split2_impl(&'x mut self) -> (Target, Self::Rest) {
+        self.value.split2_impl()
     }
 }
 
-#[allow(non_camel_case_types)]
-impl<T, version, geometry, material, mesh, scene>
-CtxRefWrapper<T, CtxRef<version, geometry, material, mesh, scene>> {
+pub trait Split2Helper {
     #[track_caller]
-    pub fn split2<'x, version2, geometry2, material2, mesh2, scene2, version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>
-    (&'x mut self) -> (
-        CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>,
-        CtxRefWrapper<T, CtxRef<version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>>,
-    )
-    where
-        Field<version>: Acquire2<'x, Field<version2>, Rest=Field<version2Rest>>,
-        Field<geometry>: Acquire2<'x, Field<geometry2>, Rest=Field<geometry2Rest>>,
-        Field<material>: Acquire2<'x, Field<material2>, Rest=Field<material2Rest>>,
-        Field<mesh>: Acquire2<'x, Field<mesh2>, Rest=Field<mesh2Rest>>,
-        Field<scene>: Acquire2<'x, Field<scene2>, Rest=Field<scene2Rest>>
-    {
-        let (version, versionRest) = self.value.version.acquire();
-        let (geometry, geometryRest) = self.value.geometry.acquire();
-        let (material, materialRest) = self.value.material.acquire();
-        let (mesh, meshRest) = self.value.mesh.acquire();
-        let (scene, sceneRest) = self.value.scene.acquire();
+    fn split2<'x, Target>(&'x mut self) -> (Target, Self::Rest) where Self: Split2<'x, Target> {
+        self.split2_impl()
+    }
+}
+impl<T> Split2Helper for T {}
+
+pub trait Partial2Helper {
+    #[track_caller]
+    fn partial_borrow2<'x, Target>(&'x mut self) -> Target where Self: Split2<'x, Target> {
+        self.split2_impl().0
+    }
+}
+impl<T> Partial2Helper for T {}
+
+
+impl<'x, T, version, geometry, material, mesh, scene, version2, geometry2, material2, mesh2, scene2, version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>
+Split2<'x, CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>>
+for CtxRefWrapper<T, CtxRef<version, geometry, material, mesh, scene>>
+where
+    AcquireMarker: Acquire2<'x, version, version2, Rest=version2Rest>,
+    AcquireMarker: Acquire2<'x, geometry, geometry2, Rest=geometry2Rest>,
+    AcquireMarker: Acquire2<'x, material, material2, Rest=material2Rest>,
+    AcquireMarker: Acquire2<'x, mesh, mesh2, Rest=mesh2Rest>,
+    AcquireMarker: Acquire2<'x, scene, scene2, Rest=scene2Rest>,
+{
+type Rest = CtxRefWrapper<T, CtxRef<version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>>;
+    #[track_caller]
+    fn split2_impl(&'x mut self) -> (CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>, Self::Rest) {
+        let (version, versionRest) = AcquireMarker::acquire(&mut self.value.version);
+        let (geometry, geometryRest) = AcquireMarker::acquire(&mut self.value.geometry);
+        let (material, materialRest) = AcquireMarker::acquire(&mut self.value.material);
+        let (mesh, meshRest) = AcquireMarker::acquire(&mut self.value.mesh);
+        let (scene, sceneRest) = AcquireMarker::acquire(&mut self.value.scene);
         (
             CtxRefWrapper::new (
                 CtxRef {
@@ -1741,6 +1750,8 @@ CtxRefWrapper<T, CtxRef<version, geometry, material, mesh, scene>> {
         )
     }
 }
+
+
 
 #[allow(non_camel_case_types)]
 impl<version, geometry, material, mesh, scene> FieldsUsageMarker
