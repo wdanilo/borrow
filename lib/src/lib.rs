@@ -1284,27 +1284,30 @@ pub struct UsageTracker {
     loc: Arc<String>,
     label: &'static str,
     used: Arc<Cell<bool>>,
+    parent: Option<Arc<Cell<bool>>>,
 }
 
 impl Drop for UsageTracker {
     fn drop(&mut self) {
         if !self.used.get() {
             eprintln!("Warning [{}]: Field '{}' was not used.", self.loc, self.label);
+        } else if let Some(parent) = self.parent.take() {
+            parent.set(true);
         }
     }
 }
 
 impl UsageTracker {
     #[track_caller]
-    fn new(label: &'static str, used: Arc<Cell<bool>>) -> Self {
+    fn cons(label: &'static str, used: Arc<Cell<bool>>, parent: Option<Arc<Cell<bool>>>) -> Self {
         let call_loc = std::panic::Location::caller();
         let loc = Arc::new(format!("{}:{}", call_loc.file(), call_loc.line()));
-        Self { label, loc, used }
+        Self { label, loc, used, parent }
     }
 
     #[track_caller]
-    fn clone_track(&self) -> Self {
-        Self::new(self.label, self.used.clone())
+    fn new(label: &'static str, used: Arc<Cell<bool>>) -> Self {
+        Self::cons(label, used, None)
     }
 
     #[track_caller]
@@ -1312,10 +1315,28 @@ impl UsageTracker {
         Self::new(self.label, used)
     }
 
+    fn clone_as_used(&self) -> Self {
+        self.clone_with(Arc::new(Cell::new(true)))
+    }
+
+    #[track_caller]
+    fn new_child(&self) -> Self {
+        let used = Default::default();
+        let parent = Some(self.used.clone());
+        Self::cons(self.label, used, parent)
+    }
+
     fn mark_as_used(&self) {
         self.used.set(true);
     }
 }
+
+// impl Clone for UsageTracker {
+//     #[track_caller]
+//     fn clone(&self) -> Self {
+//         Self::new(self.label, self.used.clone())
+//     }
+// }
 
 // =========================
 // === FieldsUsageMarker ===
@@ -1558,10 +1579,7 @@ impl<'s, T> Acquire2<'s, Field<Hidden2>> for Field<T> {
     // type Rest = &'t mut T;
     #[track_caller]
     fn acquire(&'s mut self) -> Field<Hidden2> {
-        Field::cons(
-            Hidden2,
-            self.usage_tracker.clone_with(Arc::new(Cell::new(true)))
-        )
+        Field::cons(Hidden2, self.usage_tracker.clone_as_used())
     }
 }
 
@@ -1571,7 +1589,7 @@ impl<'s, 't, 'y, T> Acquire2<'s, Field<&'y mut T>> for Field<&'t mut T> where 's
     fn acquire(&'s mut self) -> Field<&'y mut T> {
         Field::cons(
             self.value_no_access_check,
-            self.usage_tracker.clone_track(),
+            self.usage_tracker.new_child(),
         )
     }
 }
@@ -1583,7 +1601,7 @@ where 's: 'y {
     fn acquire(&'s mut self) -> Field<&'y T> {
         Field::cons(
             self.value_no_access_check,
-            self.usage_tracker.clone_track(),
+            self.usage_tracker.new_child(),
         )
     }
 }
@@ -1595,7 +1613,7 @@ where 't: 'y {
     fn acquire(&'s mut self) -> Field<&'y T> {
         Field::cons(
             self.value_no_access_check,
-            self.usage_tracker.clone_track(),
+            self.usage_tracker.new_child(),
         )
     }
 }
