@@ -909,350 +909,350 @@ pub use borrow_macro::*;
 use tstr::TS;
 
 
-// ==============
-// === Traits ===
-// ==============
-
-pub mod traits {
-    pub use super::Acquire as _;
-    pub use super::Partial as _;
-    pub use super::PartialHelper as _;
-    pub use super::RefCast as _;
-    pub use super::AsRefs as _;
-    pub use super::AsRefsHelper as _;
-}
-
-
-// ==============
-// === AsRefs ===
-// ==============
-
-/// Borrow all fields of a struct and output a partially borrowed struct, like
-/// `p!(<mut field1, field2>MyStruct)`.
-pub trait AsRefs<'t, T> {
-    fn as_refs_impl(&'t mut self) -> T;
-}
-
-impl<T> AsRefsHelper<'_> for T {}
-pub trait AsRefsHelper<'t> {
-    /// Borrow all fields of a struct and output a partially borrowed struct, like
-    /// `p!(<mut field1, field2>MyStruct)`.
-    #[inline(always)]
-    fn as_refs<T>(&'t mut self) -> T
-    where Self: AsRefs<'t, T> { self.as_refs_impl() }
-}
-
-
-// =========================
-// === No Access Wrapper ===
-// =========================
-
-/// A phantom type used to mark fields as hidden in the partially borrowed structs.
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct Hidden<T>(*mut T);
-
-impl<T> Copy for Hidden<T> {}
-impl<T> Clone for Hidden<T> {
-    fn clone(&self) -> Self { *self }
-}
-
-
-// ===============
-// === RefCast ===
-// ===============
-
-pub trait RefCast<'t, T> {
-    /// All possible casts of a mutable reference: `&mut T` (identity), `&T`, and `Hidden<T>`.
-    fn ref_cast(&'t mut self) -> T;
-}
-
-impl<'t, T> RefCast<'t, &'t T> for T {
-    #[inline(always)]
-    fn ref_cast(&'t mut self) -> &'t T { self }
-}
-
-impl<'t, T> RefCast<'t, &'t mut T> for T {
-    #[inline(always)]
-    fn ref_cast(&'t mut self) -> &'t mut T { self }
-}
-
-impl<'t, T> RefCast<'t, Hidden<T>> for T {
-    #[inline(always)]
-    fn ref_cast(&'t mut self) -> Hidden<T> { Hidden(self) }
-}
-
-
-// ==================
-// === RefFlatten ===
-// ==================
-
-/// Flattens `&mut &mut T` into `&mut T` and `&mut &T` into `&T`.
-pub trait RefFlatten<'t> {
-    type Output;
-    fn ref_flatten(&'t mut self) -> Self::Output;
-}
-
-impl<'t, T: 't> RefFlatten<'t> for &'_ mut T {
-    type Output = &'t mut T;
-    fn ref_flatten(&'t mut self) -> Self::Output {
-        *self
-    }
-}
-
-impl<'t, T: 't> RefFlatten<'t> for &'_ T {
-    type Output = &'t T;
-    fn ref_flatten(&'t mut self) -> Self::Output {
-        *self
-    }
-}
-
-pub type RefFlattened<'t, T> = <T as RefFlatten<'t>>::Output;
-
-
-// ===============
-// === Acquire ===
-// ===============
-
-/// This is a documentation for type-level field borrowing transformation. It involves checking if a
-/// field of a partially borrowed struct can be borrowed in a specific form and provides the remaining
-/// fields post-borrow.
-pub trait           Acquire<Target>                  { type Rest; }
-impl<T, S>          Acquire<Hidden<T>> for S         { type Rest = S; }
-impl<'t: 's, 's, T> Acquire<&'s mut T> for &'t mut T { type Rest = Hidden<T>; }
-impl<'t: 's, 's, T> Acquire<&'s     T> for &'t mut T { type Rest = &'t T; }
-impl<'t: 's, 's, T> Acquire<&'s     T> for &'t     T { type Rest = &'t T; }
-
-/// Remaining fields after borrowing a specific field. See the documentation of [`Acquire`] to learn more.
-pub type Acquired<This, Target> = <This as Acquire<Target>>::Rest;
-
-
-// ===================
-// === SplitFields ===
-// ===================
-
-/// Split `HList` of borrows into target `HList` of borrows and a `HList` of remaining borrows
-/// after acquiring the target. See the documentation of [`Acquire`] for more information.
-///
-/// This trait is automatically implemented for all types.
-pub trait          SplitFields<Target>               { type Rest; }
-impl               SplitFields<Nil>          for Nil { type Rest = Nil; }
-impl<H, H2, T, T2> SplitFields<Cons<H2, T2>> for Cons<H, T> where
-T: SplitFields<T2>, H: Acquire<H2> {
-    type Rest = Cons<Acquired<H, H2>, <T as SplitFields<T2>>::Rest>;
-}
-
-type SplitFieldsRest<T, Target> = <T as SplitFields<Target>>::Rest;
-
-
-// ===============
-// === Partial ===
-// ===============
-
-/// Helper trait for [`Partial`]. This trait is automatically implemented by the [`borrow!`]
-/// macro. It is used to provide Rust type inferencer with additional type information. In particular, it
-/// is used to tell that any partial borrow of a struct results in the same struct type, but parametrized
-/// differently. It is needed for Rust to correctly infer target types for associated methods, like:
-///
-/// ```ignore
-/// #[derive(Partial)]
-/// #[module(crate)]
-/// pub struct Ctx {
-///     pub geometry: GeometryCtx,
-///     pub material: MaterialCtx,
-///     pub mesh: MeshCtx,
-///     pub scene: SceneCtx,
-/// }
-///
-/// impl p!(<mut geometry, mut material>Ctx) {
-///     fn my_method(&mut self){}
-/// }
-///
-/// fn test(ctx: p!(&<mut *> Ctx)) {
-///     ctx.partial_borrow().my_method();
-/// }
-/// ```
-pub trait PartialInferenceGuide<Target> {}
-
-/// Implementation of partial field borrowing. The `Target` type parameter specifies the required
-/// partial borrow representation, such as `p!(<mut field1, field2>MyStruct)`.
-///
-/// This trait is automatically implemented for all partial borrow representations.
-pub trait Partial<Target> : PartialInferenceGuide<Target> {
-    type Rest;
-
-    /// See the documentation of [`PartialHelper::partial_borrow`].
-    #[inline(always)]
-    fn partial_borrow_impl(&mut self) -> &mut Target {
-        unsafe { &mut *(self as *mut _ as *mut _) }
-    }
-
-    /// See the documentation of [`PartialHelper::split`].
-    #[inline(always)]
-    fn split_impl(&mut self) -> (&mut Target, &mut Self::Rest) {
-        let a = unsafe { &mut *(self as *mut _ as *mut _) };
-        let b = unsafe { &mut *(self as *mut _ as *mut _) };
-        (a, b)
-    }
-}
-
-impl<Source, Target> Partial<Target> for Source where
-Source: PartialInferenceGuide<Target>,
-Source: HasFields,
-Target: HasFields,
-Fields<Source>: SplitFields<Fields<Target>>,
-Target: ReplaceFields<SplitFieldsRest<Fields<Source>, Fields<Target>>> {
-    type Rest = ReplacedFields<Target, SplitFieldsRest<Fields<Source>, Fields<Target>>>;
-}
-
-/// Helper for [`Partial`]. This trait is automatically implemented for all types.
-impl<Target> PartialHelper for Target {}
-pub trait PartialHelper {
-    /// Borrow fields from this partial borrow for the `Target` partial borrow, like
-    /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
-    #[inline(always)]
-    fn partial_borrow<Target>(&mut self) -> &mut Target
-    where Self: PartialNotEq<Target> { self.partial_borrow_impl() }
-
-    /// Borrow fields from this partial borrow for the `Target` partial borrow, like
-    /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
-    #[inline(always)]
-    fn part<Target>(&mut self) -> &mut Target
-    where Self: PartialNotEq<Target> { self.partial_borrow_impl() }
-
-    /// Borrow fields from this partial borrow for the `Target` partial borrow, like
-    /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
-    #[inline(always)]
-    fn partial_borrow_or_eq<Target>(&mut self) -> &mut Target
-    where Self: Partial<Target> { self.partial_borrow_impl() }
-
-    /// Split this partial borrow into the `Target` partial borrow and the remaining fields, like
-    /// `let (scene, ctx2) = ctx.split::<p!(<mut scene>Ctx)>()`.
-    #[inline(always)]
-    fn split<Target>(&mut self) -> (&mut Target, &mut Self::Rest)
-    where Self: Partial<Target> { self.split_impl() }
-}
-
-
-// ====================
-// === PartialNotEq ===
-// ====================
-
-pub trait PartialNotEq<Target> : Partial<Target> + NotEq<Target> {}
-impl<Target, T> PartialNotEq<Target> for T where T: Partial<Target> + NotEq<Target> {}
-
-
-// =============
-// === NotEq ===
-// =============
-
-pub trait NotEq<Target> {}
-impl<Source, Target> NotEq<Target> for Source where
-    Source: HasFields,
-    Target: HasFields,
-    Fields<Source>: NotEqFields<Fields<Target>> {
-}
-
-pub trait NotEqFields<Target> {}
-impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<Hidden<H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<Hidden<H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<Hidden<H>, T2> where T: NotEqFields<T2> {}
-
-impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ mut H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ mut H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ mut H, T2> where T: NotEqFields<T2> {}
-
-impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ H, T2> where T: NotEqFields<T2> {}
-
-
-// ==================
-// === UnifyField ===
-// ==================
-
-pub trait UnifyField<Other> { type Result; }
-
-impl<    T> UnifyField<Hidden<T>> for Hidden<T> { type Result = Hidden<T>; }
-impl<'t, T> UnifyField<&'t     T> for Hidden<T> { type Result = &'t     T; }
-impl<'t, T> UnifyField<&'t mut T> for Hidden<T> { type Result = &'t mut T; }
-
-impl<'t, T> UnifyField<Hidden<T>> for &'t T { type Result = &'t     T; }
-impl<'t, T> UnifyField<&'t     T> for &'t T { type Result = &'t     T; }
-impl<'t, T> UnifyField<&'t mut T> for &'t T { type Result = &'t mut T; }
-
-impl<'t, T> UnifyField<Hidden<T>> for &'t mut T { type Result = &'t mut T; }
-impl<'t, T> UnifyField<&'t     T> for &'t mut T { type Result = &'t mut T; }
-impl<'t, T> UnifyField<&'t mut T> for &'t mut T { type Result = &'t mut T; }
-
-type ConcatenatedField<T, Other> = <T as UnifyField<Other>>::Result;
-
-
-// ====================
-// === UnifyFields ===
-// ====================
-
-pub trait UnifyFields<Other> { type Result; }
-type ConcatFieldsResult<T, Other> = <T as UnifyFields<Other>>::Result;
-
-impl UnifyFields<Nil> for Nil {
-    type Result = Nil;
-}
-
-impl<H, H2, T, T2> UnifyFields<Cons<H2, T2>> for Cons<H, T> where
-    H: UnifyField<H2>,
-    T: UnifyFields<T2> {
-    type Result = Cons<ConcatenatedField<H, H2>, <T as UnifyFields<T2>>::Result>;
-}
-
-pub trait Unify<Other> {
-    type Result;
-}
-
-impl<Source, Other> Unify<Other> for Source where
-    Source: HasFields,
-    Other: HasFields,
-    Fields<Source>: UnifyFields<Fields<Other>>,
-    Other: ReplaceFields<ConcatFieldsResult<Fields<Source>, Fields<Other>>> {
-    type Result = ReplacedFields<Other, ConcatFieldsResult<Fields<Source>, Fields<Other>>>;
-}
-
-pub type Union<T, Other> = <T as Unify<Other>>::Result;
-
-
-// ==============
-// === Macros ===
-// ==============
-
-#[macro_export]
-macro_rules! lifetime_chooser {
-    ([$lt1:lifetime]               $($ts:tt)*) => {& $lt1 $($ts)*};
-    ([$lt1:lifetime $lt2:lifetime] $($ts:tt)*) => {& $lt2 $($ts)*};
-}
-
-#[macro_export]
-macro_rules! partial {
-    // &'a <...> Ctx <...>
-    (& $lt:lifetime $($ts:tt)*) => { & $lt mut $crate::partial! { $($ts)* } };
-    (& $($ts:tt)*)              => { &     mut $crate::partial! { $($ts)* } };
-    (< $($ts:tt)*)              => {           $crate::partial! { @1 [] $($ts)* } };
-
-    // <...> Ctx <...>
-    (@1 $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @2 $n $fs          $($ts)* } };
-    (@1 [$($fs:tt)*]   $t:tt    $($ts:tt)*) => { $crate::partial! { @1    [$($fs)* $t] $($ts)* } };
-
-    // Ctx <...>
-    (@2 $n:ident $fs:tt)              => { $crate::partial! { @4 $n [] $fs } };
-    (@2 $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @3 $n [] $fs $($ts)* } };
-
-    // <...>
-    (@3 $n:ident $ps:tt       $fs:tt >)                => { $crate::partial! { @4 $n $ps          $fs } };
-    (@3 $n:ident [$($ps:tt)*] $fs:tt $t:tt $($ts:tt)*) => { $crate::partial! { @3 $n [$($ps)* $t] $fs $($ts)* } };
-
-    // Production
-    (@4 $n:ident $ps:tt [$($fs:tt)*]) => { $n! { @1 $ps $($fs)* } };
-}
-// ::borrow::partial! { @ 4 Ctx      [ 'static  ,  usize ]           [ mut  material ]                }
+// // ==============
+// // === Traits ===
+// // ==============
+//
+// pub mod traits {
+//     pub use super::Acquire as _;
+//     pub use super::Partial as _;
+//     pub use super::PartialHelper as _;
+//     pub use super::RefCast as _;
+//     pub use super::AsRefs as _;
+//     pub use super::AsRefsHelper as _;
+// }
+
+//
+// // ==============
+// // === AsRefs ===
+// // ==============
+//
+// /// Borrow all fields of a struct and output a partially borrowed struct, like
+// /// `p!(<mut field1, field2>MyStruct)`.
+// pub trait AsRefs<'t, T> {
+//     fn as_refs_impl(&'t mut self) -> T;
+// }
+//
+// impl<T> AsRefsHelper<'_> for T {}
+// pub trait AsRefsHelper<'t> {
+//     /// Borrow all fields of a struct and output a partially borrowed struct, like
+//     /// `p!(<mut field1, field2>MyStruct)`.
+//     #[inline(always)]
+//     fn as_refs<T>(&'t mut self) -> T
+//     where Self: AsRefs<'t, T> { self.as_refs_impl() }
+// }
+//
+//
+// // =========================
+// // === No Access Wrapper ===
+// // =========================
+//
+// /// A phantom type used to mark fields as hidden in the partially borrowed structs.
+// #[repr(transparent)]
+// #[derive(Debug)]
+// pub struct Hidden<T>(*mut T);
+//
+// impl<T> Copy for Hidden<T> {}
+// impl<T> Clone for Hidden<T> {
+//     fn clone(&self) -> Self { *self }
+// }
+//
+//
+// // ===============
+// // === RefCast ===
+// // ===============
+//
+// pub trait RefCast<'t, T> {
+//     /// All possible casts of a mutable reference: `&mut T` (identity), `&T`, and `Hidden<T>`.
+//     fn ref_cast(&'t mut self) -> T;
+// }
+//
+// impl<'t, T> RefCast<'t, &'t T> for T {
+//     #[inline(always)]
+//     fn ref_cast(&'t mut self) -> &'t T { self }
+// }
+//
+// impl<'t, T> RefCast<'t, &'t mut T> for T {
+//     #[inline(always)]
+//     fn ref_cast(&'t mut self) -> &'t mut T { self }
+// }
+//
+// impl<'t, T> RefCast<'t, Hidden<T>> for T {
+//     #[inline(always)]
+//     fn ref_cast(&'t mut self) -> Hidden<T> { Hidden(self) }
+// }
+//
+//
+// // ==================
+// // === RefFlatten ===
+// // ==================
+//
+// /// Flattens `&mut &mut T` into `&mut T` and `&mut &T` into `&T`.
+// pub trait RefFlatten<'t> {
+//     type Output;
+//     fn ref_flatten(&'t mut self) -> Self::Output;
+// }
+//
+// impl<'t, T: 't> RefFlatten<'t> for &'_ mut T {
+//     type Output = &'t mut T;
+//     fn ref_flatten(&'t mut self) -> Self::Output {
+//         *self
+//     }
+// }
+//
+// impl<'t, T: 't> RefFlatten<'t> for &'_ T {
+//     type Output = &'t T;
+//     fn ref_flatten(&'t mut self) -> Self::Output {
+//         *self
+//     }
+// }
+//
+// pub type RefFlattened<'t, T> = <T as RefFlatten<'t>>::Output;
+//
+//
+// // ===============
+// // === Acquire ===
+// // ===============
+//
+// /// This is a documentation for type-level field borrowing transformation. It involves checking if a
+// /// field of a partially borrowed struct can be borrowed in a specific form and provides the remaining
+// /// fields post-borrow.
+// pub trait           Acquire<Target>                  { type Rest; }
+// impl<T, S>          Acquire<Hidden<T>> for S         { type Rest = S; }
+// impl<'t: 's, 's, T> Acquire<&'s mut T> for &'t mut T { type Rest = Hidden<T>; }
+// impl<'t: 's, 's, T> Acquire<&'s     T> for &'t mut T { type Rest = &'t T; }
+// impl<'t: 's, 's, T> Acquire<&'s     T> for &'t     T { type Rest = &'t T; }
+//
+// /// Remaining fields after borrowing a specific field. See the documentation of [`Acquire`] to learn more.
+// pub type Acquired<This, Target> = <This as Acquire<Target>>::Rest;
+//
+//
+// // ===================
+// // === SplitFields ===
+// // ===================
+//
+// /// Split `HList` of borrows into target `HList` of borrows and a `HList` of remaining borrows
+// /// after acquiring the target. See the documentation of [`Acquire`] for more information.
+// ///
+// /// This trait is automatically implemented for all types.
+// pub trait          SplitFields<Target>               { type Rest; }
+// impl               SplitFields<Nil>          for Nil { type Rest = Nil; }
+// impl<H, H2, T, T2> SplitFields<Cons<H2, T2>> for Cons<H, T> where
+// T: SplitFields<T2>, H: Acquire<H2> {
+//     type Rest = Cons<Acquired<H, H2>, <T as SplitFields<T2>>::Rest>;
+// }
+//
+// type SplitFieldsRest<T, Target> = <T as SplitFields<Target>>::Rest;
+//
+//
+// // ===============
+// // === Partial ===
+// // ===============
+//
+// /// Helper trait for [`Partial`]. This trait is automatically implemented by the [`borrow!`]
+// /// macro. It is used to provide Rust type inferencer with additional type information. In particular, it
+// /// is used to tell that any partial borrow of a struct results in the same struct type, but parametrized
+// /// differently. It is needed for Rust to correctly infer target types for associated methods, like:
+// ///
+// /// ```ignore
+// /// #[derive(Partial)]
+// /// #[module(crate)]
+// /// pub struct Ctx {
+// ///     pub geometry: GeometryCtx,
+// ///     pub material: MaterialCtx,
+// ///     pub mesh: MeshCtx,
+// ///     pub scene: SceneCtx,
+// /// }
+// ///
+// /// impl p!(<mut geometry, mut material>Ctx) {
+// ///     fn my_method(&mut self){}
+// /// }
+// ///
+// /// fn test(ctx: p!(&<mut *> Ctx)) {
+// ///     ctx.partial_borrow().my_method();
+// /// }
+// /// ```
+// pub trait PartialInferenceGuide<Target> {}
+//
+// /// Implementation of partial field borrowing. The `Target` type parameter specifies the required
+// /// partial borrow representation, such as `p!(<mut field1, field2>MyStruct)`.
+// ///
+// /// This trait is automatically implemented for all partial borrow representations.
+// pub trait Partial<Target> : PartialInferenceGuide<Target> {
+//     type Rest;
+//
+//     /// See the documentation of [`PartialHelper::partial_borrow`].
+//     #[inline(always)]
+//     fn partial_borrow_impl(&mut self) -> &mut Target {
+//         unsafe { &mut *(self as *mut _ as *mut _) }
+//     }
+//
+//     /// See the documentation of [`PartialHelper::split`].
+//     #[inline(always)]
+//     fn split_impl(&mut self) -> (&mut Target, &mut Self::Rest) {
+//         let a = unsafe { &mut *(self as *mut _ as *mut _) };
+//         let b = unsafe { &mut *(self as *mut _ as *mut _) };
+//         (a, b)
+//     }
+// }
+//
+// impl<Source, Target> Partial<Target> for Source where
+// Source: PartialInferenceGuide<Target>,
+// Source: HasFields,
+// Target: HasFields,
+// Fields<Source>: SplitFields<Fields<Target>>,
+// Target: ReplaceFields<SplitFieldsRest<Fields<Source>, Fields<Target>>> {
+//     type Rest = ReplacedFields<Target, SplitFieldsRest<Fields<Source>, Fields<Target>>>;
+// }
+//
+// /// Helper for [`Partial`]. This trait is automatically implemented for all types.
+// impl<Target> PartialHelper for Target {}
+// pub trait PartialHelper {
+//     /// Borrow fields from this partial borrow for the `Target` partial borrow, like
+//     /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
+//     #[inline(always)]
+//     fn partial_borrow<Target>(&mut self) -> &mut Target
+//     where Self: PartialNotEq<Target> { self.partial_borrow_impl() }
+//
+//     /// Borrow fields from this partial borrow for the `Target` partial borrow, like
+//     /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
+//     #[inline(always)]
+//     fn part<Target>(&mut self) -> &mut Target
+//     where Self: PartialNotEq<Target> { self.partial_borrow_impl() }
+//
+//     /// Borrow fields from this partial borrow for the `Target` partial borrow, like
+//     /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
+//     #[inline(always)]
+//     fn partial_borrow_or_eq<Target>(&mut self) -> &mut Target
+//     where Self: Partial<Target> { self.partial_borrow_impl() }
+//
+//     /// Split this partial borrow into the `Target` partial borrow and the remaining fields, like
+//     /// `let (scene, ctx2) = ctx.split::<p!(<mut scene>Ctx)>()`.
+//     #[inline(always)]
+//     fn split<Target>(&mut self) -> (&mut Target, &mut Self::Rest)
+//     where Self: Partial<Target> { self.split_impl() }
+// }
+//
+//
+// // ====================
+// // === PartialNotEq ===
+// // ====================
+//
+// pub trait PartialNotEq<Target> : Partial<Target> + NotEq<Target> {}
+// impl<Target, T> PartialNotEq<Target> for T where T: Partial<Target> + NotEq<Target> {}
+//
+//
+// // =============
+// // === NotEq ===
+// // =============
+//
+// pub trait NotEq<Target> {}
+// impl<Source, Target> NotEq<Target> for Source where
+//     Source: HasFields,
+//     Target: HasFields,
+//     Fields<Source>: NotEqFields<Fields<Target>> {
+// }
+//
+// pub trait NotEqFields<Target> {}
+// impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<Hidden<H>, T2> {}
+// impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<Hidden<H>, T2> {}
+// impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<Hidden<H>, T2> where T: NotEqFields<T2> {}
+//
+// impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ mut H, T2> {}
+// impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ mut H, T2> {}
+// impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ mut H, T2> where T: NotEqFields<T2> {}
+//
+// impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ H, T2> {}
+// impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ H, T2> {}
+// impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ H, T2> where T: NotEqFields<T2> {}
+//
+//
+// // ==================
+// // === UnifyField ===
+// // ==================
+//
+// pub trait UnifyField<Other> { type Result; }
+//
+// impl<    T> UnifyField<Hidden<T>> for Hidden<T> { type Result = Hidden<T>; }
+// impl<'t, T> UnifyField<&'t     T> for Hidden<T> { type Result = &'t     T; }
+// impl<'t, T> UnifyField<&'t mut T> for Hidden<T> { type Result = &'t mut T; }
+//
+// impl<'t, T> UnifyField<Hidden<T>> for &'t T { type Result = &'t     T; }
+// impl<'t, T> UnifyField<&'t     T> for &'t T { type Result = &'t     T; }
+// impl<'t, T> UnifyField<&'t mut T> for &'t T { type Result = &'t mut T; }
+//
+// impl<'t, T> UnifyField<Hidden<T>> for &'t mut T { type Result = &'t mut T; }
+// impl<'t, T> UnifyField<&'t     T> for &'t mut T { type Result = &'t mut T; }
+// impl<'t, T> UnifyField<&'t mut T> for &'t mut T { type Result = &'t mut T; }
+//
+// type ConcatenatedField<T, Other> = <T as UnifyField<Other>>::Result;
+//
+//
+// // ====================
+// // === UnifyFields ===
+// // ====================
+//
+// pub trait UnifyFields<Other> { type Result; }
+// type ConcatFieldsResult<T, Other> = <T as UnifyFields<Other>>::Result;
+//
+// impl UnifyFields<Nil> for Nil {
+//     type Result = Nil;
+// }
+//
+// impl<H, H2, T, T2> UnifyFields<Cons<H2, T2>> for Cons<H, T> where
+//     H: UnifyField<H2>,
+//     T: UnifyFields<T2> {
+//     type Result = Cons<ConcatenatedField<H, H2>, <T as UnifyFields<T2>>::Result>;
+// }
+//
+// pub trait Unify<Other> {
+//     type Result;
+// }
+//
+// impl<Source, Other> Unify<Other> for Source where
+//     Source: HasFields,
+//     Other: HasFields,
+//     Fields<Source>: UnifyFields<Fields<Other>>,
+//     Other: ReplaceFields<ConcatFieldsResult<Fields<Source>, Fields<Other>>> {
+//     type Result = ReplacedFields<Other, ConcatFieldsResult<Fields<Source>, Fields<Other>>>;
+// }
+//
+// pub type Union<T, Other> = <T as Unify<Other>>::Result;
+//
+//
+// // ==============
+// // === Macros ===
+// // ==============
+//
+// #[macro_export]
+// macro_rules! lifetime_chooser {
+//     ([$lt1:lifetime]               $($ts:tt)*) => {& $lt1 $($ts)*};
+//     ([$lt1:lifetime $lt2:lifetime] $($ts:tt)*) => {& $lt2 $($ts)*};
+// }
+//
+// #[macro_export]
+// macro_rules! partial {
+//     // &'a <...> Ctx <...>
+//     (& $lt:lifetime $($ts:tt)*) => { & $lt mut $crate::partial! { $($ts)* } };
+//     (& $($ts:tt)*)              => { &     mut $crate::partial! { $($ts)* } };
+//     (< $($ts:tt)*)              => {           $crate::partial! { @1 [] $($ts)* } };
+//
+//     // <...> Ctx <...>
+//     (@1 $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @2 $n $fs          $($ts)* } };
+//     (@1 [$($fs:tt)*]   $t:tt    $($ts:tt)*) => { $crate::partial! { @1    [$($fs)* $t] $($ts)* } };
+//
+//     // Ctx <...>
+//     (@2 $n:ident $fs:tt)              => { $crate::partial! { @4 $n [] $fs } };
+//     (@2 $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @3 $n [] $fs $($ts)* } };
+//
+//     // <...>
+//     (@3 $n:ident $ps:tt       $fs:tt >)                => { $crate::partial! { @4 $n $ps          $fs } };
+//     (@3 $n:ident [$($ps:tt)*] $fs:tt $t:tt $($ts:tt)*) => { $crate::partial! { @3 $n [$($ps)* $t] $fs $($ts)* } };
+//
+//     // Production
+//     (@4 $n:ident $ps:tt [$($fs:tt)*]) => { $n! { @1 $ps $($fs)* } };
+// }
+// // ::borrow::partial! { @ 4 Ctx      [ 'static  ,  usize ]           [ mut  material ]                }
 
 // ===================
 
@@ -1262,18 +1262,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use crate::hlist::Nat;
 
-pub struct GeometryCtx {}
-pub struct MaterialCtx {}
-pub struct MeshCtx {}
-pub struct SceneCtx {}
-
-pub struct Ctx<'v, V: Debug> {
-    version: &'v V,
-    pub geometry: GeometryCtx,
-    pub material: MaterialCtx,
-    pub mesh: MeshCtx,
-    pub scene: SceneCtx,
-}
 
 
 // ====================
@@ -1282,8 +1270,8 @@ pub struct Ctx<'v, V: Debug> {
 
 #[derive(Debug)]
 pub struct UsageTracker {
-    loc: Arc<String>,
     label: &'static str,
+    loc: Arc<String>,
     used: Arc<Cell<bool>>,
     parent: Option<Arc<Cell<bool>>>,
 }
@@ -1316,6 +1304,7 @@ impl UsageTracker {
         Self::new(self.label, used)
     }
 
+    #[track_caller]
     fn clone_as_used(&self) -> Self {
         self.clone_with(Arc::new(Cell::new(true)))
     }
@@ -1339,44 +1328,43 @@ impl Clone for UsageTracker {
     }
 }
 
-// =========================
-// === FieldsUsageMarker ===
-// =========================
+// ===========================
+// === MarkAllFieldsAsUsed ===
+// ===========================
 
-trait FieldsUsageMarker {
+trait MarkAllFieldsAsUsed {
     fn mark_all_fields_as_used(&self);
 }
 
 #[derive(Debug)]
-pub struct AllFieldsUsed<T: FieldsUsageMarker> {
+pub struct AllFieldsUsed<T: MarkAllFieldsAsUsed> {
     value: T
 }
 
-impl<T: FieldsUsageMarker> AllFieldsUsed<T> {
+impl<T: MarkAllFieldsAsUsed> AllFieldsUsed<T> {
     fn new(value: T) -> Self {
         Self { value }
     }
 }
 
-impl<T: FieldsUsageMarker> Deref for AllFieldsUsed<T> {
+impl<T: MarkAllFieldsAsUsed> Deref for AllFieldsUsed<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.value
     }
 }
 
-impl<T: FieldsUsageMarker> DerefMut for AllFieldsUsed<T> {
+impl<T: MarkAllFieldsAsUsed> DerefMut for AllFieldsUsed<T> {
     fn deref_mut(&mut self) -> &mut T {
         &mut self.value
     }
 }
 
-impl<T: FieldsUsageMarker> Drop for AllFieldsUsed<T> {
+impl<T: MarkAllFieldsAsUsed> Drop for AllFieldsUsed<T> {
     fn drop(&mut self) {
         self.value.mark_all_fields_as_used();
     }
 }
-
 
 // =============
 // === Field ===
@@ -1400,13 +1388,13 @@ impl<T> Field<T> {
         Self { value_no_access_check, usage_tracker }
     }
 
-    fn mark_as_used(&self) {
-        self.usage_tracker.mark_as_used();
+    #[track_caller]
+    fn clone_as_hidden(&self) -> Field<Hidden> {
+        Field::cons(Hidden, self.usage_tracker.clone_as_used())
     }
 
-    #[track_caller]
-    fn clone_as_hidden(&self) -> Field<Hidden2> {
-        Field::cons(Hidden2, self.usage_tracker.clone_as_used())
+    fn mark_as_used(&self) {
+        self.usage_tracker.mark_as_used();
     }
 }
 
@@ -1425,6 +1413,8 @@ impl<T> DerefMut for Field<T> {
     }
 }
 
+// === Clone ===
+
 pub struct FieldCloneMarker;
 
 pub trait FieldClone<'s, This> {
@@ -1433,10 +1423,10 @@ pub trait FieldClone<'s, This> {
 }
 
 
-impl<'s> FieldClone<'s, Hidden2> for FieldCloneMarker {
-    type Cloned = Hidden2;
+impl<'s> FieldClone<'s, Hidden> for FieldCloneMarker {
+    type Cloned = Hidden;
     #[track_caller]
-    fn clone(this: &'s mut Field<Hidden2>) -> Field<Self::Cloned> {
+    fn clone(this: &'s mut Field<Hidden>) -> Field<Self::Cloned> {
         Field::cons(this.value_no_access_check, this.usage_tracker.clone())
     }
 }
@@ -1460,83 +1450,200 @@ impl<'s, 't, T: 's> FieldClone<'s, &'t mut T> for FieldCloneMarker {
 
 // ==========================
 
-trait HasAllHiddenFields {
-    type AllFields;
-    type AllHiddenFields;
-    type AllRefFields<'t> where Self: 't;
-    type AllMutFields<'t> where Self: 't;
+// ====================
+// === HasFieldsExt ===
+// ====================
+
+trait HasFieldsExt: HasFields {
+    type FieldsAsHidden;
+    type FieldsAsRef<'t> where Self: 't;
+    type FieldsAsMut<'t> where Self: 't;
 }
 
-trait HasField<Field> {
-    type Type;
-    type Index: Nat;
-    fn take_field(self) -> Self::Type;
-}
+type FieldsAsHidden<T> = <T as HasFieldsExt>::FieldsAsHidden;
+type FieldsAsRef<'t, T> = <T as HasFieldsExt>::FieldsAsRef<'t>;
+type FieldsAsMut<'t, T> = <T as HasFieldsExt>::FieldsAsMut<'t>;
 
-type FieldIndex<T, Field> = <T as HasField<Field>>::Index;
 
-trait HasRefWithFields<F> {
+// =======================
+// === AsRefWithFields ===
+// =======================
+
+trait AsRefWithFields<F> {
     type Output;
 }
 
-type RefWithFields<T, F> = <T as HasRefWithFields<F>>::Output;
+type RefWithFields<T, F> = <T as AsRefWithFields<F>>::Output;
 
-// ==========================
+// ====================
+// === HasFieldsExt ===
+// ====================
 
-impl<'t, T: Debug, version, geometry, material, mesh, scene>
-HasRefWithFields<HList![version, geometry, material, mesh, scene]>
-for Ctx<'t, T> {
-    type Output = CtxRef<version, geometry, material, mesh, scene>;
+impl<'v, T: Debug> HasFieldsExt for Ctx<'v, T> {
+    type FieldsAsHidden = HList![Hidden, Hidden, Hidden, Hidden, Hidden];
+    type FieldsAsRef<'t> = HList![&'t &'v T, &'t GeometryCtx, &'t MaterialCtx, &'t MeshCtx, &'t SceneCtx] where Self: 't;
+    type FieldsAsMut<'t> = HList![&'t mut &'v T, &'t mut GeometryCtx, &'t mut MaterialCtx, &'t mut MeshCtx, &'t mut SceneCtx] where Self: 't;
 }
 
-impl<'v, T: Debug> HasAllHiddenFields for Ctx<'v, T> {
-    type AllFields = HList![&'v T, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
-    type AllHiddenFields = HList![Hidden2, Hidden2, Hidden2, Hidden2, Hidden2];
-    type AllRefFields<'t> = HList![&'t &'v T, &'t GeometryCtx, &'t MaterialCtx, &'t MeshCtx, &'t SceneCtx] where Self: 't;
-    type AllMutFields<'t> = HList![&'t mut &'v T, &'t mut GeometryCtx, &'t mut MaterialCtx, &'t mut MeshCtx, &'t mut SceneCtx] where Self: 't;
-}
-
-// pub struct Ctx<'v, V: Debug> {
-//     version: &'v V,
-//     pub geometry: GeometryCtx,
-//     pub material: MaterialCtx,
-//     pub mesh: MeshCtx,
-//     pub scene: SceneCtx,
-// }
-
-type AllFields<T> = <T as HasAllHiddenFields>::AllFields;
-type AllHiddenFields<T> = <T as HasAllHiddenFields>::AllHiddenFields;
-type AllRefFields<'t, T> = <T as HasAllHiddenFields>::AllRefFields<'t>;
-type AllMutFields<'t, T> = <T as HasAllHiddenFields>::AllMutFields<'t>;
-//
-// type Foo<'t> = hlist::SetItemAtResult<
-//     HList![Hidden2, Hidden2, Hidden2, Hidden2, Hidden2],
-//     hlist::N1,
-//     &'t mut hlist::ItemAt<hlist::N1, Fields<Ctx<'static, usize>>>
-// >;
-
-
-type SetFieldAsMutAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
+pub type SetFieldAsMutAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
     &'t mut hlist::ItemAt<N, Fields<S>>
 >;
 
-type SetFieldAsRefAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
+pub type SetFieldAsRefAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
     &'t hlist::ItemAt<N, Fields<S>>
 >;
 
-type SetFieldAsHiddenAt<'t, N, X> = hlist::SetItemAtResult<X, N,
-    Hidden2
+pub type SetFieldAsHiddenAt<'t, N, X> = hlist::SetItemAtResult<X, N,
+    Hidden
 >;
 
-type SetFieldAsMut<'t, S, F, X> = SetFieldAsMutAt<'t, S, FieldIndex<S, F>, X>;
-type SetFieldAsRef<'t, S, F, X> = SetFieldAsRefAt<'t, S, FieldIndex<S, F>, X>;
-type SetFieldAsHidden<'t, S, F, X> = SetFieldAsHiddenAt<'t, FieldIndex<S, F>, X>;
+pub type SetFieldAsMut    <'t, S, F, X> = SetFieldAsMutAt<'t, S, FieldIndex<S, F>, X>;
+pub type SetFieldAsRef    <'t, S, F, X> = SetFieldAsRefAt<'t, S, FieldIndex<S, F>, X>;
+pub type SetFieldAsHidden <'t, S, F, X> = SetFieldAsHiddenAt<'t, FieldIndex<S, F>, X>;
+
+// ==============
+// === Hidden ===
+// ==============
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone)]
+pub struct Hidden;
+
+impl Hidden {
+    fn is_used(&self) -> bool {
+        true
+    }
+}
+
+// ===============
+// === Acquire ===
+// ===============
+
+// struct Field
+
+#[repr(transparent)]
+struct FieldRefMut<'t, T> (&'t mut Field<T>);
+
+struct AcquireMarker;
+
+pub trait Acquire<'s, This, Target> {
+    type Rest;
+    fn acquire(this: &'s mut Field<This>) -> (Field<Target>, Field<Self::Rest>);
+}
+
+impl<'s, T> Acquire<'s, T, Hidden> for AcquireMarker
+where FieldCloneMarker: FieldClone<'s, T> {
+    type Rest = <FieldCloneMarker as FieldClone<'s, T>>::Cloned;
+    #[track_caller]
+    fn acquire(this: &'s mut Field<T>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            FieldCloneMarker::clone(this)
+        )
+    }
+}
+
+impl<'s, 't, 'y, T> Acquire<'s, &'t mut T, &'y mut T> for AcquireMarker
+where 's: 'y {
+    type Rest = Hidden;
+    #[track_caller]
+    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
+        let rest = this.clone_as_hidden();
+        (
+            Field::cons(
+                this.value_no_access_check,
+                this.usage_tracker.new_child(),
+            ),
+            rest
+        )
+    }
+}
+
+impl<'s, 't, 'y, T: 's> Acquire<'s, &'t mut T, &'y T> for AcquireMarker
+where 's: 'y {
+    type Rest = &'s T;
+    #[track_caller]
+    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
+        (
+            Field::cons(
+                this.value_no_access_check,
+                this.usage_tracker.new_child(),
+            ),
+            Field::cons(
+                this.value_no_access_check,
+                this.usage_tracker.clone(),
+            ),
+        )
+    }
+}
+
+impl<'s, 't, 'y, T> Acquire<'s, &'t T, &'y T> for AcquireMarker
+where 't: 'y {
+    type Rest = &'t T;
+    #[track_caller]
+    fn acquire(this: &'s mut Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
+        (
+            Field::cons(
+                this.value_no_access_check,
+                this.usage_tracker.new_child(),
+            ),
+            FieldCloneMarker::clone(this)
+        )
+    }
+}
+
+// =============
+// === Split ===
+// =============
+
+pub trait Split<'x, Target> {
+    type Rest;
+    fn split_impl(&'x mut self) -> (Target, Self::Rest);
+}
+
+impl<'x, Target, T> Split<'x, Target> for AllFieldsUsed<T>
+where T: Split<'x, Target> + MarkAllFieldsAsUsed {
+    type Rest = <T as Split<'x, Target>>::Rest;
+    #[track_caller]
+    fn split_impl(&'x mut self) -> (Target, Self::Rest) {
+        self.value.split_impl()
+    }
+}
+
+pub trait SplitHelper<'x> {
+    #[track_caller]
+    fn split<Target>(&'x mut self) -> (Target, Self::Rest) where Self: Split<'x, Target> {
+        self.split_impl()
+    }
+}
+impl<'t, T> SplitHelper<'t> for T {}
+
+pub trait PartialHelper<'x> {
+    #[track_caller]
+    fn partial_borrow<Target>(&'x mut self) -> Target where Self: Split<'x, Target> {
+        self.split_impl().0
+    }
+}
+impl<'t, T> PartialHelper<'t> for T {}
 
 
+// ===========
+// === GEN ===
+// ===========
 
-// impl<'v, V: Debug> HasFields for Ctx<'v, V> {
-//     type Fields = HList![&'v V, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
-// }
+pub struct GeometryCtx {}
+pub struct MaterialCtx {}
+pub struct MeshCtx {}
+pub struct SceneCtx {}
+
+pub struct Ctx<'v, V: Debug> {
+    version: &'v V,
+    pub geometry: GeometryCtx,
+    pub material: MaterialCtx,
+    pub mesh: MeshCtx,
+    pub scene: SceneCtx,
+}
+
 
 #[repr(C)]
 #[allow(non_camel_case_types)]
@@ -1546,6 +1653,12 @@ pub struct CtxRef<version, geometry, material, mesh, scene> {
     pub material: Field<material>,
     pub mesh: Field<mesh>,
     pub scene: Field<scene>,
+}
+
+impl<'t, T: Debug, version, geometry, material, mesh, scene>
+AsRefWithFields<HList![version, geometry, material, mesh, scene]>
+for Ctx<'t, T> {
+    type Output = CtxRef<version, geometry, material, mesh, scene>;
 }
 
 #[allow(non_camel_case_types)]
@@ -1658,147 +1771,19 @@ for Ctx<'t, T> {
     }
 }
 
-
-
-/// A phantom type used to mark fields as hidden in the partially borrowed structs.
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone)]
-pub struct Hidden2;
-
-// impl<T> Copy for Hidden2<T> {}
-// impl<T> Clone for Hidden2<T> {
-//     fn clone(&self) -> Self { *self }
-// }
-
-impl Hidden2 {
-    fn is_used(&self) -> bool {
-        true
-    }
-}
-
-struct AcquireMarker;
-
-pub trait Acquire2<'s, This, Target> {
-    type Rest;
-    fn acquire(this: &'s mut Field<This>) -> (Field<Target>, Field<Self::Rest>);
-}
-
-
-
-impl<'s, T> Acquire2<'s, T, Hidden2> for AcquireMarker
-where FieldCloneMarker: FieldClone<'s, T> {
-    // type Rest = ();
-    type Rest = <FieldCloneMarker as FieldClone<'s, T>>::Cloned;
-    #[track_caller]
-    fn acquire(this: &'s mut Field<T>) -> (Field<Hidden2>, Field<Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            // Field::new("mock", ())
-            FieldCloneMarker::clone(this)
-        )
-    }
-}
-
-impl<'s, 't, 'y, T> Acquire2<'s, &'t mut T, &'y mut T> for AcquireMarker
-where 's: 'y {
-    // type Rest = ();
-    type Rest = Hidden2;
-    #[track_caller]
-    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
-        let rest = this.clone_as_hidden();
-        (
-            Field::cons(
-                this.value_no_access_check,
-                this.usage_tracker.new_child(),
-            ),
-            rest
-        )
-    }
-}
-
-impl<'s, 't, 'y, T: 's> Acquire2<'s, &'t mut T, &'y T> for AcquireMarker
-where 's: 'y {
-    // type Rest = ();
-    type Rest = &'s T;
-    #[track_caller]
-    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
-        (
-            Field::cons(
-                this.value_no_access_check,
-                this.usage_tracker.new_child(),
-            ),
-            // Field::new("mock", ())
-            Field::cons(
-                this.value_no_access_check,
-                this.usage_tracker.clone(),
-            ),
-        )
-    }
-}
-
-impl<'s, 't, 'y, T> Acquire2<'s, &'t T, &'y T> for AcquireMarker
-where 't: 'y {
-    // type Rest = ();
-    type Rest = &'t T;
-    #[track_caller]
-    fn acquire(this: &'s mut Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
-        (
-            Field::cons(
-                this.value_no_access_check,
-                this.usage_tracker.new_child(),
-            ),
-            // Field::new("mock", ())
-            FieldCloneMarker::clone(this)
-        )
-    }
-}
-
-
-
-pub trait Split2<'x, Target> {
-    type Rest;
-    fn split2_impl(&'x mut self) -> (Target, Self::Rest);
-}
-
-impl<'x, Target, T> Split2<'x, Target> for AllFieldsUsed<T>
-where T: Split2<'x, Target> + FieldsUsageMarker {
-    type Rest = <T as Split2<'x, Target>>::Rest;
-    #[track_caller]
-    fn split2_impl(&'x mut self) -> (Target, Self::Rest) {
-        self.value.split2_impl()
-    }
-}
-
-pub trait Split2Helper<'x> {
-    #[track_caller]
-    fn split2<Target>(&'x mut self) -> (Target, Self::Rest) where Self: Split2<'x, Target> {
-        self.split2_impl()
-    }
-}
-impl<'t, T> Split2Helper<'t> for T {}
-
-pub trait Partial2Helper<'x> {
-    #[track_caller]
-    fn partial_borrow2<Target>(&'x mut self) -> Target where Self: Split2<'x, Target> {
-        self.split2_impl().0
-    }
-}
-impl<'t, T> Partial2Helper<'t> for T {}
-
-
 impl<'x, T, version, geometry, material, mesh, scene, version2, geometry2, material2, mesh2, scene2, version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>
-Split2<'x, CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>>
+Split<'x, CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>>
 for CtxRefWrapper<T, CtxRef<version, geometry, material, mesh, scene>>
 where
-    AcquireMarker: Acquire2<'x, version, version2, Rest=version2Rest>,
-    AcquireMarker: Acquire2<'x, geometry, geometry2, Rest=geometry2Rest>,
-    AcquireMarker: Acquire2<'x, material, material2, Rest=material2Rest>,
-    AcquireMarker: Acquire2<'x, mesh, mesh2, Rest=mesh2Rest>,
-    AcquireMarker: Acquire2<'x, scene, scene2, Rest=scene2Rest>,
+    AcquireMarker: Acquire<'x, version, version2, Rest=version2Rest>,
+    AcquireMarker: Acquire<'x, geometry, geometry2, Rest=geometry2Rest>,
+    AcquireMarker: Acquire<'x, material, material2, Rest=material2Rest>,
+    AcquireMarker: Acquire<'x, mesh, mesh2, Rest=mesh2Rest>,
+    AcquireMarker: Acquire<'x, scene, scene2, Rest=scene2Rest>,
 {
 type Rest = CtxRefWrapper<T, CtxRef<version2Rest, geometry2Rest, material2Rest, mesh2Rest, scene2Rest>>;
     #[track_caller]
-    fn split2_impl(&'x mut self) -> (CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>, Self::Rest) {
+    fn split_impl(&'x mut self) -> (CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>, Self::Rest) {
         let (version, versionRest) = AcquireMarker::acquire(&mut self.value.version);
         let (geometry, geometryRest) = AcquireMarker::acquire(&mut self.value.geometry);
         let (material, materialRest) = AcquireMarker::acquire(&mut self.value.material);
@@ -1827,61 +1812,12 @@ type Rest = CtxRefWrapper<T, CtxRef<version2Rest, geometry2Rest, material2Rest, 
     }
 }
 
-
-// impl< S, T> CtxRefWrapper<S, T> {
-//     #[track_caller]
-//     fn extract<'x, Field>(&'x mut self) -> (
-//     CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<Self>>>>>
-//     // hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<Self>>>
-//     )
-//     where
-//         T: HasFields,
-//         S: HasField<Field> + HasAllHiddenFields,
-//         AllHiddenFields<S>: hlist::SetItemAt<FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<T>>>,
-//         Fields<T>: hlist::Index<FieldIndex<S, Field>>,
-//         Self: Split2<'x, CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<T>>>>>>,
-//         <S as HasAllHiddenFields>::AllHiddenFields: hlist::SetItemAt<FieldIndex<S, Field>,
-//             hlist::ItemAt<FieldIndex<S, Field>, Fields<T>>
-//         >,
-//         S: HasRefWithFields<hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, Fields<T>>>>,
-//
-//     {
-//         self.split2().0
-//     }
-// }
-
-
-impl< S, T> CtxRefWrapper<S, T> {
-    #[track_caller]
-    fn extract<'y, 'x, Field>(&'x mut self) -> (
-        <CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>> as HasField<Field>>::Type,
-        <Self as Split2<'x, CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>>>>::Rest
-    )
-    where
-        T: HasFields,
-        S: HasField<Field> + HasAllHiddenFields,
-        AllHiddenFields<S>: hlist::SetItemAt<FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>,
-        AllMutFields<'y, S>: hlist::Index<FieldIndex<S, Field>>,
-        Self: Split2<'x, CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>>>,
-        <S as HasAllHiddenFields>::AllHiddenFields: hlist::SetItemAt<FieldIndex<S, Field>,
-            hlist::ItemAt<FieldIndex<S, Field>, AllMutFields<'y, S>>
-        >,
-        S: HasRefWithFields<hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>,
-        CtxRefWrapper<S, RefWithFields<S, hlist::SetItemAtResult<AllHiddenFields<S>, FieldIndex<S,Field>, hlist::ItemAt<FieldIndex<S,Field>, AllMutFields<'y, S>>>>>: HasField<Field>
-    // HasField
-    {
-        let split = self.split2();
-        (split.0.take_field(), split.1)
-    }
-}
-
-
 impl<'s, 't, 'x, 'y, 'a, T: Debug, version, material, mesh, scene>
 CtxRefWrapper<Ctx<'s, T>, CtxRef<version, &'t mut GeometryCtx, material, mesh, scene>>
 where 'a: 'x,
-    Self: Split2<'x, CtxRefWrapper<Ctx<'s, T>, CtxRef<Hidden2, &'a mut GeometryCtx, Hidden2, Hidden2, Hidden2>>> {
-    fn extract_geometry(&'x mut self) -> (Field<&mut GeometryCtx>, <Self as Split2<'x, CtxRefWrapper<Ctx<'s, T>, CtxRef<Hidden2, &'a mut GeometryCtx, Hidden2, Hidden2, Hidden2>>>>::Rest) {
-        let split = self.split2();
+    Self: Split<'x, CtxRefWrapper<Ctx<'s, T>, CtxRef<Hidden, &'a mut GeometryCtx, Hidden, Hidden, Hidden>>> {
+    fn extract_geometry(&'x mut self) -> (Field<&mut GeometryCtx>, <Self as Split<'x, CtxRefWrapper<Ctx<'s, T>, CtxRef<Hidden, &'a mut GeometryCtx, Hidden, Hidden, Hidden>>>>::Rest) {
+        let split = self.split();
         let x0 = split.0;
         let x1 = split.1;
         (x0.value.geometry, x1)
@@ -1890,7 +1826,7 @@ where 'a: 'x,
 
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene> FieldsUsageMarker
+impl<version, geometry, material, mesh, scene> MarkAllFieldsAsUsed
 for CtxRef<version, geometry, material, mesh, scene> {
     fn mark_all_fields_as_used(&self) {
         self.version.mark_as_used();
@@ -1900,16 +1836,6 @@ for CtxRef<version, geometry, material, mesh, scene> {
         self.scene.mark_as_used();
     }
 }
-
-#[allow(non_camel_case_types)]
-impl<version_target, geometry_target, material_target, mesh_target, scene_target,
-     version,        geometry,        material,        mesh,        scene>
-PartialInferenceGuide<
-      CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>
-> for CtxRef<version,        geometry,        material,        mesh,        scene> {}
-
-
-
 
 impl<'v, V> Ctx<'v, V>
 where V: Debug
@@ -1945,13 +1871,13 @@ where T: HasFields {
     type Fields = T::Fields;
 }
 
-#[allow(non_camel_case_types)]
-impl<version_target, geometry_target, material_target, mesh_target, scene_target,
-     version,        geometry,        material,        mesh,        scene>
-ReplaceFields<HList![version_target, geometry_target, material_target, mesh_target, scene_target]>
-for CtxRef<version, geometry, material, mesh, scene> {
-    type Result = CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>;
-}
+// #[allow(non_camel_case_types)]
+// impl<version_target, geometry_target, material_target, mesh_target, scene_target,
+//      version,        geometry,        material,        mesh,        scene>
+// ReplaceFields<HList![version_target, geometry_target, material_target, mesh_target, scene_target]>
+// for CtxRef<version, geometry, material, mesh, scene> {
+//     type Result = CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>;
+// }
 
 
 #[macro_export]
@@ -1973,16 +1899,16 @@ macro_rules! p {
     (@3 $glt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::p! { @3 $glt $n $fs [$($ps)* $p]  $($ts)* } };
 
     // Production
-    (@4 $glt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::p! { @5 $glt $n $fs [$($ps)*] AllHiddenFields<$n<$($ps)*>> } };
+    (@4 $glt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::p! { @5 $glt $n $fs [$($ps)*] FieldsAsHidden<$n<$($ps)*>> } };
 
     (@5 $glt:tt $n:ident [, $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
         $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $($ts)* }
     };
 
-    (@5 $glt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::AllMutFields  <$lt,  $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::AllMutFields  <$glt, $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::AllRefFields  <$lt,  $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::AllRefFields  <$glt, $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$lt,  $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$glt, $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$lt,  $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$glt, $n<$($ps)*>> } };
     (@5 $glt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,  $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
     (@5 $glt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$glt, $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
     (@5 $glt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,  $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
@@ -1994,7 +1920,7 @@ macro_rules! p {
 // type Foo<'t> = RefWithFields<
 //     Ctx<'static, usize>,
 //     SetFieldAsMut<'t, Ctx<'static, usize>, TS!(geometry),
-//         AllHiddenFields<Ctx<'static, usize>>
+//         FieldsAsHidden<Ctx<'static, usize>>
 //     >
 // >;
 
@@ -2010,7 +1936,7 @@ pub fn test() {
 
     let mut ctx_ref_mut = ctx.as_refs_mut();
 
-    test2(ctx_ref_mut.partial_borrow2());
+    test2(ctx_ref_mut.partial_borrow());
 
 }
 
@@ -2020,15 +1946,15 @@ fn test2<'s, 't>(mut ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
         let y = ctx.extract_geometry();
     }
     {
-        let x = ctx.split2::<p!(&<'_ mut geometry>Ctx<'s, usize>)>();
-        // let x = ctx.split2::<CtxRefWrapper<Ctx<'s, usize>, RefWithFields<Ctx<'s, usize>, SetFieldAsMut<'p, Ctx<'s, usize>, TS![geometry], AllHiddenFields<Ctx<'s, usize>>>>>>();
+        let x = ctx.split::<p!(&<'_ mut geometry>Ctx<'s, usize>)>();
+        // let x = ctx.split::<CtxRefWrapper<Ctx<'s, usize>, RefWithFields<Ctx<'s, usize>, SetFieldAsMut<'p, Ctx<'s, usize>, TS![geometry], FieldsAsHidden<Ctx<'s, usize>>>>>>();
     }
     // _test4(ctx.partial_borrow())
-    test5(ctx.partial_borrow2());
+    test5(ctx.partial_borrow());
 }
 //
 //
-// fn test5(ctx: CtxRef<Hidden2, Hidden2, &'_ mut MaterialCtx, Hidden2, Hidden2>) {
+// fn test5(ctx: CtxRef<Hidden, Hidden, &'_ mut MaterialCtx, Hidden, Hidden>) {
 //     // &*ctx.material;
 //     // println!("yo")
 // }
@@ -2065,7 +1991,7 @@ impl<Args, T> DerefMut for CtxRefWrapper<Args, T> {
     }
 }
 
-impl<Args, T: FieldsUsageMarker> FieldsUsageMarker for CtxRefWrapper<Args, T> {
+impl<Args, T: MarkAllFieldsAsUsed> MarkAllFieldsAsUsed for CtxRefWrapper<Args, T> {
     fn mark_all_fields_as_used(&self) {
         self.value.mark_all_fields_as_used();
     }
