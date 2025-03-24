@@ -1401,6 +1401,7 @@ impl<T> DerefMut for Field<T> {
 // ==========================
 
 trait HasAllHiddenFields {
+    type AllFields;
     type AllHiddenFields;
     type AllRefFields<'t> where Self: 't;
     type AllMutFields<'t> where Self: 't;
@@ -1427,6 +1428,7 @@ for Ctx<'t, T> {
 }
 
 impl<'v, T: Debug> HasAllHiddenFields for Ctx<'v, T> {
+    type AllFields = HList![&'v T, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
     type AllHiddenFields = HList![Hidden2, Hidden2, Hidden2, Hidden2, Hidden2];
     type AllRefFields<'t> = HList![&'t &'v T, &'t GeometryCtx, &'t MaterialCtx, &'t MeshCtx, &'t SceneCtx] where Self: 't;
     type AllMutFields<'t> = HList![&'t mut &'v T, &'t mut GeometryCtx, &'t mut MaterialCtx, &'t mut MeshCtx, &'t mut SceneCtx] where Self: 't;
@@ -1440,6 +1442,7 @@ impl<'v, T: Debug> HasAllHiddenFields for Ctx<'v, T> {
 //     pub scene: SceneCtx,
 // }
 
+type AllFields<T> = <T as HasAllHiddenFields>::AllFields;
 type AllHiddenFields<T> = <T as HasAllHiddenFields>::AllHiddenFields;
 type AllRefFields<'t, T> = <T as HasAllHiddenFields>::AllRefFields<'t>;
 type AllMutFields<'t, T> = <T as HasAllHiddenFields>::AllMutFields<'t>;
@@ -1598,11 +1601,11 @@ where 't: 'y {
 }
 
 #[allow(non_camel_case_types)]
-impl<version, geometry, material, mesh, scene>
-CtxRef<version, geometry, material, mesh, scene> {
+impl<T, version, geometry, material, mesh, scene>
+CtxRefWrapper<T, CtxRef<version, geometry, material, mesh, scene>> {
     #[track_caller]
     pub fn partial_borrow2<'x, version2, geometry2, material2, mesh2, scene2>
-    (&'x mut self) -> CtxRef<version2, geometry2, material2, mesh2, scene2>
+    (&'x mut self) -> CtxRefWrapper<T, CtxRef<version2, geometry2, material2, mesh2, scene2>>
     where
         Field<version>: Acquire2<'x, Field<version2>>,
         Field<geometry>: Acquire2<'x, Field<geometry2>>,
@@ -1610,13 +1613,15 @@ CtxRef<version, geometry, material, mesh, scene> {
         Field<mesh>: Acquire2<'x, Field<mesh2>>,
         Field<scene>: Acquire2<'x, Field<scene2>>
     {
-        CtxRef {
-            version: self.version.acquire(),
-            geometry: self.geometry.acquire(),
-            material: self.material.acquire(),
-            mesh:     self.mesh.acquire(),
-            scene:    self.scene.acquire(),
-        }
+        CtxRefWrapper::new (
+            CtxRef {
+                version: self.value.version.acquire(),
+                geometry: self.value.geometry.acquire(),
+                material: self.value.material.acquire(),
+                mesh: self.value.mesh.acquire(),
+                scene: self.value.scene.acquire(),
+            }
+        )
     }
 }
 
@@ -1666,15 +1671,17 @@ impl<'v, V> Ctx<'v, V>
 where V: Debug
 {
     #[track_caller]
-    pub fn as_refs_mut(&mut self) -> AllFieldsUsed<CtxRef<&mut &'v V, &mut GeometryCtx, &mut MaterialCtx, &mut MeshCtx, &mut SceneCtx>> {
+    pub fn as_refs_mut(&mut self) -> AllFieldsUsed<CtxRefWrapper<Ctx<'v, V>, CtxRef<&mut &'v V, &mut GeometryCtx, &mut MaterialCtx, &mut MeshCtx, &mut SceneCtx>>> {
         AllFieldsUsed::new(
-            CtxRef {
-                version:  Field::new("version", &mut self.version),
-                geometry: Field::new("geometry", &mut self.geometry),
-                material: Field::new("material", &mut self.material),
-                mesh:     Field::new("mesh", &mut self.mesh),
-                scene:    Field::new("scene", &mut self.scene),
-            }
+            CtxRefWrapper::new(
+                CtxRef {
+                    version:  Field::new("version", &mut self.version),
+                    geometry: Field::new("geometry", &mut self.geometry),
+                    material: Field::new("material", &mut self.material),
+                    mesh:     Field::new("mesh", &mut self.mesh),
+                    scene:    Field::new("scene", &mut self.scene),
+                }
+            )
         )
     }
 }
@@ -1697,127 +1704,12 @@ for CtxRef<version, geometry, material, mesh, scene> {
     type Result = CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>;
 }
 
-#[macro_export]
-macro_rules! _Ctx {
-    (@2 [$($ps:tt)*] $lt:lifetime $ts:tt [, $($lt2:lifetime)? * $($xs:tt)*]) => {
-        _Ctx! { @2 [$($ps)*] $lt [
-            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N0, Ctx<$($ps)*>> }]
-            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N1, Ctx<$($ps)*>> }]
-            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N2, Ctx<$($ps)*>> }]
-            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N3, Ctx<$($ps)*>> }]
-            [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N4, Ctx<$($ps)*>> }]
-        ] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime $ts:tt [, $($lt2:lifetime)? mut * $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [
-            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N0, Ctx<$($ps)*>> }]
-            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N1, Ctx<$($ps)*>> }]
-            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N2, Ctx<$($ps)*>> }]
-            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N3, Ctx<$($ps)*>> }]
-            [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N4, Ctx<$($ps)*>> }]
-        ] [$ ($xs) *] }
-    };
-
-
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? version $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [[lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N0, Ctx<$($ps)*>>}] $t1 $t2 $t3 $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? geometry $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N1, Ctx<$($ps)*>>}] $t2 $t3 $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? material $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 $t1 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N2, Ctx<$($ps)*>>}] $t3 $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? mesh $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 $t1 $t2 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N3, Ctx<$($ps)*>>}] $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? scene $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 $t1 $t2 $t3 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N4, Ctx<$($ps)*>>}]] [$ ($xs) *] }
-    };
-
-
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut version $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [[lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N0, Ctx<$($ps)*>>}] $t1 $t2 $t3 $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut geometry $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N1, Ctx<$($ps)*>>}] $t2 $t3 $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)?mut material $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 $t1 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N2, Ctx<$($ps)*>>}] $t3 $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut mesh $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 $t1 $t2 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N3, Ctx<$($ps)*>>}] $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut scene $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 $t1 $t2 $t3 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N4, Ctx<$($ps)*>>}]] [$ ($xs) *] }
-    };
-
-
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! version $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [[Hidden2] $t1 $t2 $t3 $t4] [$ ($xs) *] }
-    };
-
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! geometry $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 [Hidden2] $t2 $t3 $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! material $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 $t1 [Hidden2] $t3 $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! mesh $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 $t1 $t2 [Hidden2] $t4] [$ ($xs) *] }
-    };
-    (@2 [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! scene $ ($xs:tt) *]) => {
-        _Ctx! { @2 [$($ps)*] $lt [$t0 $t1 $t2 $t3 [Hidden2]] [$ ($xs) *] }
-    };
-
-
-    (@2 $ps:tt $lt:lifetime [$ ([$ ($ts:tt) *]) *] [$ (,) *]) => {
-        CtxRef < $ ($ ($ts) *), * >
-    };
-
-    (@2 $($ts:tt)*) => { MACRO_EXPAND_ERROR! { $($ts)* } };
-
-    (@1 [$($ps:tt)*] $lt:lifetime $ ($ts:tt) *) => {
-        _Ctx! { @2 [$($ps)*] $lt [
-            [Hidden2]
-            [Hidden2]
-            [Hidden2]
-            [Hidden2]
-            [Hidden2]
-        ] [$($ts)*] }
-    };
-
-    (@1 [$($ps:tt)*] $($ts:tt)*) => {
-        _Ctx! { @2 [$($ps)*] '_ [
-            [Hidden2]
-            [Hidden2]
-            [Hidden2]
-            [Hidden2]
-            [Hidden2]
-        ] [, $ ($ts) *] }
-    };
-
-    (@FieldAt [$lt:lifetime $t1:ident] 0) => { $lt $t1 };
-    (@FieldAt [$lt:lifetime $t1:ident] 1) => { $lt $t1 };
-
-}
-
-// pub struct Ctx<'v, V: Debug> {
-//     version: &'v V,
-//     pub geometry: GeometryCtx,
-//     pub material: MaterialCtx,
-//     pub mesh: MeshCtx,
-//     pub scene: SceneCtx,
-// }
-
-// with the macro we can support impl as in ticket
-pub use _Ctx as Ctx;
 
 #[macro_export]
 macro_rules! p {
     // & 'glt < fs... > Ctx < ps... >
-    (& $glt:lifetime < $($ts:tt)*)              => {           $crate::p! { @1 $glt [] $($ts)* } };
-    (&               < $($ts:tt)*)              => {           $crate::p! { @1 '_   [] $($ts)* } };
+    (& $glt:lifetime < $($ts:tt)*) => { $crate::p! { @1 $glt [] $($ts)* } };
+    (&               < $($ts:tt)*) => { $crate::p! { @1 '_   [] $($ts)* } };
 
     // fs ...> Ctx <...>
     (@1 $glt:tt $fs:tt       > $n:ident $($ts:tt)*) => { $crate::p! { @2 $glt $n $fs          $($ts)* } };
@@ -1847,7 +1739,7 @@ macro_rules! p {
     (@5 $glt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,  $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
     (@5 $glt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$glt, $n<$($ps)*>, $crate::TS!($f), $($ts)*> } };
 
-    (@5 $glt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { $crate::RefWithFields< $n<$($ps)*> , $($ts)* > };
+    (@5 $glt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { CtxRefWrapper<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
 }
 
 // type Foo<'t> = RefWithFields<
@@ -1877,7 +1769,7 @@ fn _test(mut ctx: Ctx<'_, usize>) {
     let _ctx_ref_mut = ctx.as_refs_mut();
 }
 
-fn test2(mut ctx: CtxRef<&'_ mut &usize, &'_ mut GeometryCtx, &'_ mut MaterialCtx, &'_ mut MeshCtx, &'_ mut SceneCtx>) {
+fn test2(mut ctx: p!(&<mut *>Ctx<'_, usize>)) {
     // _test4(ctx.partial_borrow())
     test5(ctx.partial_borrow2());
 }
@@ -1888,33 +1780,46 @@ fn test2(mut ctx: CtxRef<&'_ mut &usize, &'_ mut GeometryCtx, &'_ mut MaterialCt
 //     // println!("yo")
 // }
 
-fn test5<'t>(ctx: p!(&'t<mut *>Ctx<'_, usize>)) {
+fn test5<'t>(ctx: p!(&'t<mut geometry>Ctx<'_, usize>)) {
     // &*ctx.material;
     // println!("yo")
 }
 
-//
-// struct Bar1<T> {
-//     x: T
-// }
-//
-// struct Foo1<T> {
-//     x: T,
-//     y: T,
-// }
-//
-//
-// trait HasFirstFieldType {
-//     type FirstFieldType;
-// }
-//
-// impl<T> HasFirstFieldType for Foo1<T> {
-//     type FirstFieldType = T;
-// }
-//
-// type FirstFieldType<T> = <T as HasFirstFieldType>::FirstFieldType;
-//
-// impl<T, U> Bar1<U>
-// where Foo1<T>: HasFirstFieldType<FirstFieldType = U> {
-//
-// }
+struct CtxRefWrapper<Args, T> {
+    value: T,
+    phantom_data: PhantomData<Args>
+}
+
+impl<Args, T> CtxRefWrapper<Args, T> {
+    fn new(value: T) -> Self {
+        Self {
+            value,
+            phantom_data: PhantomData
+        }
+    }
+}
+
+impl<Args, T> Deref for CtxRefWrapper<Args, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<Args, T> DerefMut for CtxRefWrapper<Args, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+impl<Args, T: FieldsUsageMarker> FieldsUsageMarker for CtxRefWrapper<Args, T> {
+    fn mark_all_fields_as_used(&self) {
+        self.value.mark_all_fields_as_used();
+    }
+}
+
+
+impl<'t, T: Debug> p!(&<>Ctx<'t, T>) {
+
+}
+
