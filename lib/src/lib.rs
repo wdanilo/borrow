@@ -1308,6 +1308,7 @@ impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ H, T2> where T: NotE
 #[derive(Debug)]
 struct UsageTracker {
     label: &'static str,
+    disabled: Cell<bool>,
     loc: Arc<String>,
     used: Arc<Cell<bool>>,
     parent: Option<Arc<Cell<bool>>>,
@@ -1316,7 +1317,9 @@ struct UsageTracker {
 impl Drop for UsageTracker {
     fn drop(&mut self) {
         if !self.used.get() {
-            error!("Warning [{}]: Field '{}' was not used.", self.loc, self.label);
+            if !self.disabled.get() {
+                error!("Warning [{}]: Field '{}' was not used.", self.loc, self.label);
+            }
         } else if let Some(parent) = self.parent.take() {
             parent.set(true);
         }
@@ -1325,92 +1328,52 @@ impl Drop for UsageTracker {
 
 impl UsageTracker {
     #[track_caller]
-    fn new(label: &'static str, used: Arc<Cell<bool>>, parent: Option<Arc<Cell<bool>>>) -> Self {
+    fn new(label: &'static str, used: Arc<Cell<bool>>, parent: Option<Arc<Cell<bool>>>, disabled: Cell<bool>) -> Self {
         let call_loc = std::panic::Location::caller();
         let loc = Arc::new(format!("{}:{}", call_loc.file(), call_loc.line()));
-        Self { label, loc, used, parent }
+        Self { label, loc, used, parent, disabled }
     }
 
-    #[track_caller]
-    fn clone_with(&self, used: Arc<Cell<bool>>) -> Self {
-        Self::new(self.label, used, None)
-    }
-
+    // #[track_caller]
+    // fn clone_with(&self, used: Arc<Cell<bool>>) -> Self {
+    //     Self::new(self.label, used, None, self.disabled)
+    // }
+    //
     #[track_caller]
     fn clone_as_used(&self) -> Self {
-        self.clone_with(Arc::new(Cell::new(true)))
+        Self::new(self.label, Arc::new(Cell::new(true)), None, Cell::new(false))
     }
 
     #[track_caller]
     fn new_child(&self) -> Self {
         let used = Default::default();
         let parent = Some(self.used.clone());
-        Self::new(self.label, used, parent)
+        Self::new(self.label, used, parent, Cell::new(false))
+    }
+
+    #[track_caller]
+    fn new_child_disabled(&self) -> Self {
+        let used = Default::default();
+        let parent = Some(self.used.clone());
+        Self::new(self.label, used, parent, Cell::new(true))
     }
 
     fn mark_as_used(&self) {
         self.used.set(true);
     }
-}
 
-impl Clone for UsageTracker {
-    #[track_caller]
-    fn clone(&self) -> Self {
-        Self::new(self.label, self.used.clone(), None)
+    fn disable(&self) {
+        self.disabled.set(true);
     }
 }
 
-// ===========================
-// === MarkAllFieldsAsUsed ===
-// ===========================
+// =============================
+// === HasUsageTrackedFields ===
+// =============================
 
-pub trait MarkAllFieldsAsUsed {
+pub trait HasUsageTrackedFields {
     fn mark_all_fields_as_used(&self);
-}
-
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct AllFieldsUsed<T: MarkAllFieldsAsUsed> {
-    value: T
-}
-
-impl<T: MarkAllFieldsAsUsed> AllFieldsUsed<T> {
-    #[inline(always)]
-    fn new(value: T) -> Self {
-        Self { value }
-    }
-}
-
-impl<T: MarkAllFieldsAsUsed> Deref for AllFieldsUsed<T> {
-    type Target = T;
-    #[inline(always)]
-    fn deref(&self) -> &T {
-        &self.value
-    }
-}
-
-impl<T: MarkAllFieldsAsUsed> DerefMut for AllFieldsUsed<T> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
-}
-
-#[cfg(usage_tracking_enabled)]
-impl<T: MarkAllFieldsAsUsed> Drop for AllFieldsUsed<T> {
-    fn drop(&mut self) {
-        self.value.mark_all_fields_as_used();
-    }
-}
-
-impl<'s, Target, T> Partial<'s, Target> for AllFieldsUsed<T>
-where T: MarkAllFieldsAsUsed + Partial<'s, Target> {
-    type Rest = <T as Partial<'s, Target>>::Rest;
-    #[track_caller]
-    #[inline(always)]
-    fn split_impl(&'s mut self) -> (Target, Self::Rest) {
-        self.value.split_impl()
-    }
+    fn disable_field_usage_tracking_shallow(&self);
 }
 
 // =============
@@ -1429,8 +1392,8 @@ impl<T> Field<T> {
     #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn new(label: &'static str, value: T) -> Self {
-        let usage_tracker = UsageTracker::new(label, Arc::default(), None);
+    pub fn new(label: &'static str, value: T) -> Self {
+        let usage_tracker = UsageTracker::new(label, Arc::default(), None, Cell::new(false));
         Self::cons(value, usage_tracker)
     }
 
@@ -1471,13 +1434,23 @@ impl<T> Field<T> {
 
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn mark_as_used(&self) {
+    pub fn mark_as_used(&self) {
         self.usage_tracker.mark_as_used();
     }
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn mark_as_used(&self) {}
+
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    pub fn disable_usage_tracking_shallow(&self) {
+        self.usage_tracker.disable();
+    }
+
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn disable_usage_tracking_shallow(&self) {}
 }
 
 impl<T> Deref for Field<T> {
@@ -1501,60 +1474,60 @@ impl<T> DerefMut for Field<T> {
 
 // === Clone ===
 
-pub struct FieldCloneMarker;
-
-pub trait FieldClone<'s, This> {
-    type Cloned;
-    fn clone(this: &'s mut Field<This>) -> Field<Self::Cloned>;
-}
-
-impl<'s> FieldClone<'s, Hidden> for FieldCloneMarker {
-    type Cloned = Hidden;
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(usage_tracking_enabled)]
-    fn clone(this: &'s mut Field<Hidden>) -> Field<Self::Cloned> {
-        Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone())
-    }
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(not(usage_tracking_enabled))]
-    fn clone(this: &'s mut Field<Hidden>) -> Field<Self::Cloned> {
-        Field::cons(this.value_no_usage_tracking)
-    }
-}
-
-impl<'s, 't, T> FieldClone<'s, &'t T> for FieldCloneMarker {
-    type Cloned = &'t T;
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(usage_tracking_enabled)]
-    fn clone(this: &'s mut Field<&'t T>) -> Field<Self::Cloned> {
-        Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone())
-    }
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(not(usage_tracking_enabled))]
-    fn clone(this: &'s mut Field<&'t T>) -> Field<Self::Cloned> {
-        Field::cons(this.value_no_usage_tracking)
-    }
-}
-
-impl<'s, 't, T: 's> FieldClone<'s, &'t mut T> for FieldCloneMarker {
-    type Cloned = &'s mut T;
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(usage_tracking_enabled)]
-    fn clone(this: &'s mut Field<&'t mut T>) -> Field<Self::Cloned> {
-        Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone())
-    }
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(not(usage_tracking_enabled))]
-    fn clone(this: &'s mut Field<&'t mut T>) -> Field<Self::Cloned> {
-        Field::cons(this.value_no_usage_tracking)
-    }
-}
+// pub struct FieldCloneMarker;
+//
+// pub trait FieldClone<'s, This> {
+//     type Cloned;
+//     fn clone(this: &'s mut Field<This>) -> Field<Self::Cloned>;
+// }
+//
+// impl<'s> FieldClone<'s, Hidden> for FieldCloneMarker {
+//     type Cloned = Hidden;
+//     #[track_caller]
+//     #[inline(always)]
+//     #[cfg(usage_tracking_enabled)]
+//     fn clone(this: &'s mut Field<Hidden>) -> Field<Self::Cloned> {
+//         Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone())
+//     }
+//     #[track_caller]
+//     #[inline(always)]
+//     #[cfg(not(usage_tracking_enabled))]
+//     fn clone(this: &'s mut Field<Hidden>) -> Field<Self::Cloned> {
+//         Field::cons(this.value_no_usage_tracking)
+//     }
+// }
+//
+// impl<'s, 't, T> FieldClone<'s, &'t T> for FieldCloneMarker {
+//     type Cloned = &'t T;
+//     #[track_caller]
+//     #[inline(always)]
+//     #[cfg(usage_tracking_enabled)]
+//     fn clone(this: &'s mut Field<&'t T>) -> Field<Self::Cloned> {
+//         Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone())
+//     }
+//     #[track_caller]
+//     #[inline(always)]
+//     #[cfg(not(usage_tracking_enabled))]
+//     fn clone(this: &'s mut Field<&'t T>) -> Field<Self::Cloned> {
+//         Field::cons(this.value_no_usage_tracking)
+//     }
+// }
+//
+// impl<'s, 't, T: 's> FieldClone<'s, &'t mut T> for FieldCloneMarker {
+//     type Cloned = &'s mut T;
+//     #[track_caller]
+//     #[inline(always)]
+//     #[cfg(usage_tracking_enabled)]
+//     fn clone(this: &'s mut Field<&'t mut T>) -> Field<Self::Cloned> {
+//         Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone())
+//     }
+//     #[track_caller]
+//     #[inline(always)]
+//     #[cfg(not(usage_tracking_enabled))]
+//     fn clone(this: &'s mut Field<&'t mut T>) -> Field<Self::Cloned> {
+//         Field::cons(this.value_no_usage_tracking)
+//     }
+// }
 
 // ====================
 // === HasFieldsExt ===
@@ -1646,10 +1619,14 @@ where T: HasField<Field> {
     }
 }
 
-impl<Args, T: MarkAllFieldsAsUsed> MarkAllFieldsAsUsed for ExplicitParams<Args, T> {
+impl<Args, T: HasUsageTrackedFields> HasUsageTrackedFields for ExplicitParams<Args, T> {
     #[inline(always)]
     fn mark_all_fields_as_used(&self) {
         self.value.mark_all_fields_as_used();
+    }
+    #[inline(always)]
+    fn disable_field_usage_tracking_shallow(&self) {
+        self.value.disable_field_usage_tracking_shallow();
     }
 }
 
@@ -1676,20 +1653,60 @@ pub struct Hidden;
 // === Acquire ===
 // ===============
 
-struct AcquireMarker;
+pub struct AcquireMarker;
 
 pub trait Acquire<'s, This, Target> {
     type Rest;
     fn acquire(this: &'s mut Field<This>) -> (Field<Target>, Field<Self::Rest>);
 }
 
-impl<'s, T> Acquire<'s, T, Hidden> for AcquireMarker
-where FieldCloneMarker: FieldClone<'s, T> {
-    type Rest = <FieldCloneMarker as FieldClone<'s, T>>::Cloned;
+// impl<'s, T> Acquire<'s, T, Hidden> for AcquireMarker
+// where FieldCloneMarker: FieldClone<'s, T> {
+//     type Rest = <FieldCloneMarker as FieldClone<'s, T>>::Cloned;
+//     #[track_caller]
+//     #[inline(always)]
+//     fn acquire(this: &'s mut Field<T>) -> (Field<Hidden>, Field<Self::Rest>) {
+//         (
+//             this.clone_as_hidden(),
+//             FieldCloneMarker::clone(this)
+//         )
+//     }
+// }
+
+impl<'s, 't, T> Acquire<'s, &'t mut T, Hidden> for AcquireMarker
+where T: 's {
+    type Rest = &'s mut T;
     #[track_caller]
     #[inline(always)]
-    fn acquire(this: &'s mut Field<T>) -> (Field<Hidden>, Field<Self::Rest>) {
-        (this.clone_as_hidden(), FieldCloneMarker::clone(this))
+    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
+        )
+    }
+}
+
+impl<'s, 't, T> Acquire<'s, &'t T, Hidden> for AcquireMarker {
+    type Rest = &'t T;
+    #[track_caller]
+    #[inline(always)]
+    fn acquire(this: &'s mut Field<&'t T>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
+        )
+    }
+}
+
+impl<'s> Acquire<'s, Hidden, Hidden> for AcquireMarker {
+    type Rest = Hidden;
+    #[track_caller]
+    #[inline(always)]
+    fn acquire(this: &'s mut Field<Hidden>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
+        )
     }
 }
 
@@ -1721,7 +1738,7 @@ where 's: 'y {
     fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
         (
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone()),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
         )
     }
     #[track_caller]
@@ -1741,14 +1758,14 @@ where 't: 'y {
     fn acquire(this: &'s mut Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
         (
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()),
-            FieldCloneMarker::clone(this)
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
         )
     }
     #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn acquire(this: &'s mut Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
-        (Field::cons(this.value_no_usage_tracking), FieldCloneMarker::clone(this))
+        (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking),)
     }
 }
 
@@ -1757,38 +1774,38 @@ where 't: 'y {
 // =============
 
 #[macro_export]
-macro_rules! p {
+macro_rules! partial {
     // & 'glt < fs... > Ctx < ps... >
-    (& $glt:lifetime < $($ts:tt)*) => { $crate::p! { @1 $glt [] $($ts)* } };
-    (&               < $($ts:tt)*) => { $crate::p! { @1 '_   [] $($ts)* } };
+    (& $glt:lifetime < $($ts:tt)*) => { $crate::partial! { @1 $glt [] $($ts)* } };
+    (&               < $($ts:tt)*) => { $crate::partial! { @1 '_   [] $($ts)* } };
 
     // fs ...> Ctx <...>
-    (@1 $glt:tt $fs:tt       > $n:ident $($ts:tt)*) => { $crate::p! { @2 $glt $n $fs          $($ts)* } };
-    (@1 $glt:tt [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::p! { @1 $glt    [$($fs)* $f] $($ts)* } };
+    (@1 $glt:tt $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @2 $glt $n $fs          $($ts)* } };
+    (@1 $glt:tt [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::partial! { @1 $glt    [$($fs)* $f] $($ts)* } };
 
     // Ctx <...>
-    (@2 $glt:tt $n:ident $fs:tt)              => { $crate::p! { @4 $glt $n $fs [] } };
-    (@2 $glt:tt $n:ident $fs:tt < $($ts:tt)*) => { $crate::p! { @3 $glt $n $fs [] $($ts)* } };
+    (@2 $glt:tt $n:ident $fs:tt)              => { $crate::partial! { @4 $glt $n $fs [] } };
+    (@2 $glt:tt $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @3 $glt $n $fs [] $($ts)* } };
 
     // <...>
-    (@3 $glt:tt $n:ident $fs:tt $ps:tt >)                      => { $crate::p! { @4 $glt $n $fs $ps                   } };
-    (@3 $glt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::p! { @3 $glt $n $fs [$($ps)* $p]  $($ts)* } };
+    (@3 $glt:tt $n:ident $fs:tt $ps:tt >)                      => { $crate::partial! { @4 $glt $n $fs $ps                   } };
+    (@3 $glt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::partial! { @3 $glt $n $fs [$($ps)* $p]  $($ts)* } };
 
     // Production
-    (@4 $glt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::p! { @5 $glt $n $fs [$($ps)*] FieldsAsHidden<$n<$($ps)*>> } };
+    (@4 $glt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial! { @5 $glt $n $fs [$($ps)*] FieldsAsHidden<$n<$($ps)*>> } };
 
     (@5 $glt:tt $n:ident [, $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
-        $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $($ts)* }
+        $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $($ts)* }
     };
 
-    (@5 $glt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$lt,  $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$glt, $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$lt,  $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$glt, $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,  $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@5 $glt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$glt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@5 $glt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,  $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@5 $glt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::p! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$glt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$lt,  $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$glt, $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$lt,  $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$glt, $n<$($ps)*>> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,  $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$glt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,  $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@5 $glt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$glt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
 
     (@5 $glt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { $crate::ExplicitParams<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
 }
@@ -1852,371 +1869,7 @@ mod sandbox {
         pub mesh: MeshCtx,
         pub scene: SceneCtx,
     }
-
-    // === 1 ===
-
-    // impl<'t, T> borrow::HasFields for Ctx<'t, T>
-    // where T: Debug {
-    //     type Fields = borrow::HList![&'t T, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
-    // }
-
-    // === 2 ===
-
-    // impl<'t, T> borrow::HasFieldsExt for Ctx<'t, T>
-    // where T: Debug {
-    //     type FieldsAsHidden = borrow::HList![
-    //         borrow::Hidden,
-    //         borrow::Hidden,
-    //         borrow::Hidden,
-    //         borrow::Hidden,
-    //         borrow::Hidden
-    //     ];
-    //     type FieldsAsRef<'__a> = borrow::HList![
-    //         &'__a &'t T,
-    //         &'__a GeometryCtx,
-    //         &'__a MaterialCtx,
-    //         &'__a MeshCtx,
-    //         &'__a SceneCtx
-    //     ]
-    //     where
-    //         Self: '__a;
-    //     type FieldsAsMut<'__a> = borrow::HList![
-    //         &'__a mut &'t T,
-    //         &'__a mut GeometryCtx,
-    //         &'__a mut MaterialCtx,
-    //         &'__a mut MeshCtx,
-    //         &'__a mut SceneCtx
-    //     ]
-    //     where
-    //         Self: '__a;
-    // }
-
-    // === 3 ===
-
-    // impl<'t, T> borrow::HasField<borrow::Str!(version)>
-    // for Ctx<'t, T>
-    // where T: Debug {
-    //     type Type = &'t T;
-    //     type Index = borrow::hlist::N0;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.version
-    //     }
-    // }
-    //
-    // #[allow(non_camel_case_types)]
-    // impl<'t, T> borrow::HasField<borrow::Str!(geometry)>
-    // for Ctx<'t, T>
-    // where T: Debug {
-    //     type Type = GeometryCtx;
-    //     type Index = borrow::hlist::N1;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.geometry
-    //     }
-    // }
-    //
-    // #[allow(non_camel_case_types)]
-    // impl<'t, T> borrow::HasField<borrow::Str!(material)>
-    // for Ctx<'t, T>
-    // where T: Debug {
-    //     type Type = MaterialCtx;
-    //     type Index = borrow::hlist::N2;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.material
-    //     }
-    // }
-    //
-    // #[allow(non_camel_case_types)]
-    // impl<'t, T> borrow::HasField<borrow::Str!(mesh)>
-    // for Ctx<'t, T>
-    // where T: Debug {
-    //     type Type = MeshCtx;
-    //     type Index = borrow::hlist::N3;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.mesh
-    //     }
-    // }
-    //
-    // #[allow(non_camel_case_types)]
-    // impl<'t, T> borrow::HasField<borrow::Str!(scene)>
-    // for Ctx<'t, T>
-    // where T: Debug {
-    //     type Type = SceneCtx;
-    //     type Index = borrow::hlist::N4;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.scene
-    //     }
-    // }
-
-    // === CtxRef ===
-
-    // pub struct CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
-    //     pub version: borrow::Field<__Version>,
-    //     pub geometry: borrow::Field<__Geometry>,
-    //     pub material: borrow::Field<__Material>,
-    //     pub mesh: borrow::Field<__Mesh>,
-    //     pub scene: borrow::Field<__Scene>,
-    //     marker: std::marker::PhantomData<__S__>
-    // }
-
-    // // FIXME: this is gneerated with Field wrappers
-    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // borrow::HasFields for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
-    //     type Fields = borrow::HList![__Version, __Geometry, __Material, __Mesh, __Scene];
-    // }
-
-    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // borrow::HasField<borrow::Str!(version)>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
-    //     type Type = borrow::Field<__Version>;
-    //     type Index = borrow::hlist::N0;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.version
-    //     }
-    // }
-    //
-    // #[allow(non_camel_case_types)]
-    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // borrow::HasField<borrow::Str!(geometry)>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
-    //     type Type = borrow::Field<__Geometry>;
-    //     type Index = borrow::hlist::N1;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.geometry
-    //     }
-    // }
-    //
-    // #[allow(non_camel_case_types)]
-    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // borrow::HasField<borrow::Str!(material)>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
-    //     type Type = borrow::Field<__Material>;
-    //     type Index = borrow::hlist::N2;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.material
-    //     }
-    // }
-    //
-    // #[allow(non_camel_case_types)]
-    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // borrow::HasField<borrow::Str!(mesh)>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
-    //     type Type = borrow::Field<__Mesh>;
-    //     type Index = borrow::hlist::N3;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.mesh
-    //     }
-    // }
-    //
-    // #[allow(non_camel_case_types)]
-    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // borrow::HasField<borrow::Str!(scene)>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
-    //     type Type = borrow::Field<__Scene>;
-    //     type Index = borrow::hlist::N4;
-    //     #[inline(always)]
-    //     fn take_field(self) -> Self::Type {
-    //         self.scene
-    //     }
-    // }
-
-    // impl<'t, T, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // borrow::AsRefWithFields<borrow::HList![__Version, __Geometry, __Material, __Mesh, __Scene]>
-    // for Ctx<'t, T>
-    // where T: Debug {
-    //     type Output = CtxRef<Ctx<'t, T>, __Version, __Geometry, __Material, __Mesh, __Scene>;
-    // }
-
-
-    // #[allow(non_camel_case_types)]
-    // #[allow(non_snake_case)]
-    // impl<'__a__, __S__,
-    //     __Version, __Geometry, __Material, __Mesh, __Scene,
-    //     __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target,
-    //     __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>
-    // borrow::Partial<'__a__, CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // where
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Version, __Version__Target, Rest=__Version__Rest>,
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Geometry, __Geometry__Target, Rest=__Geometry__Rest>,
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Material, __Material__Target, Rest=__Material__Rest>,
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Mesh, __Mesh__Target, Rest=__Mesh__Rest>,
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Scene, __Scene__Target, Rest=__Scene__Rest>,
-    // {
-    //     type Rest = CtxRef<__S__, __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>;
-    //     #[track_caller]
-    //     #[inline(always)]
-    //     fn split_impl(&'__a__ mut self) -> (CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>, Self::Rest) {
-    //         use borrow::Acquire;
-    //         let (version, __version__rest) = borrow::AcquireMarker::acquire(&mut self.version);
-    //         let (geometry, __geometry__rest) = borrow::AcquireMarker::acquire(&mut self.geometry);
-    //         let (material, __material__rest) = borrow::AcquireMarker::acquire(&mut self.material);
-    //         let (mesh, __mesh__rest) = borrow::AcquireMarker::acquire(&mut self.mesh);
-    //         let (scene, __scene__rest) = borrow::AcquireMarker::acquire(&mut self.scene);
-    //         (
-    //             CtxRef {
-    //                 version,
-    //                 geometry,
-    //                 material,
-    //                 mesh,
-    //                 scene,
-    //                 marker: std::marker::PhantomData
-    //             },
-    //             CtxRef {
-    //                 version: __version__rest,
-    //                 geometry: __geometry__rest,
-    //                 material: __material__rest,
-    //                 mesh: __mesh__rest,
-    //                 scene: __scene__rest,
-    //                 marker: std::marker::PhantomData
-    //             }
-    //         )
-    //     }
-    // }
-
-    // impl<'a, '__s, '__src, '__tgt, 't, T, __Geometry, __Material, __Mesh, __Scene>
-    // CtxRef<Ctx<'t, T>, &'__src mut &'t T, __Geometry, __Material, __Mesh, __Scene>
-    // where
-    //     T: Debug,
-    //     (&'t T): '__tgt,
-    //     Self: borrow::Partial<
-    //         '__s,
-    //         CtxRef<
-    //             Ctx<'t, T>,
-    //             &'__tgt mut &'t T,
-    //             borrow::Hidden,
-    //             borrow::Hidden,
-    //             borrow::Hidden,
-    //             borrow::Hidden
-    //         >
-    //     >
-    // {
-    //     #[inline(always)]
-    //     pub fn extract_version(&'__s mut self) -> (
-    //         borrow::Field<&'__tgt mut &'t T>,
-    //         borrow::ExplicitParams<
-    //             Ctx<'t, T>,
-    //             <Self as borrow::Partial<
-    //                 '__s,
-    //                 CtxRef<
-    //                     Ctx<'t, T>,
-    //                     &'__tgt mut &'t T,
-    //                     borrow::Hidden,
-    //                     borrow::Hidden,
-    //                     borrow::Hidden,
-    //                     borrow::Hidden
-    //                 >
-    //             >>::Rest>
-    //     ) {
-    //         let split = borrow::SplitHelper::split(self);
-    //         (split.0.version, borrow::ExplicitParams::new(split.1))
-    //     }
-    // }
-    //
-    // impl<'a, '__s, '__src, '__tgt, 't, T, __Version, __Material, __Mesh, __Scene>
-    // CtxRef<Ctx<'t, T>, __Version, &'__src mut GeometryCtx, __Material, __Mesh, __Scene>
-    // where
-    //     T: Debug,
-    //     (GeometryCtx): '__tgt,
-    //     Self: borrow::Partial<
-    //         '__s,
-    //         CtxRef<
-    //             Ctx<'t, T>,
-    //             borrow::Hidden,
-    //             &'__tgt mut GeometryCtx,
-    //             borrow::Hidden,
-    //             borrow::Hidden,
-    //             borrow::Hidden
-    //         >
-    //     >
-    // {
-    //     #[inline(always)]
-    //     pub fn extract_geometry(&'__s mut self) -> (
-    //         borrow::Field<&'__tgt mut GeometryCtx>,
-    //         borrow::ExplicitParams<
-    //             Ctx<'t, T>,
-    //             <Self as borrow::Partial<
-    //                 '__s,
-    //                 CtxRef<
-    //                     Ctx<'t, T>,
-    //                     borrow::Hidden,
-    //                     &'__tgt mut GeometryCtx,
-    //                     borrow::Hidden,
-    //                     borrow::Hidden,
-    //                     borrow::Hidden
-    //                 >
-    //             >>::Rest>
-    //     ) {
-    //         let split = borrow::SplitHelper::split(self);
-    //         (split.0.geometry, borrow::ExplicitParams::new(split.1))
-    //     }
-    // }
-
-    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::MarkAllFieldsAsUsed
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
-    //     #[inline(always)]
-    //     fn mark_all_fields_as_used(&self) {
-    //         self.version.mark_as_used();
-    //         self.geometry.mark_as_used();
-    //         self.material.mark_as_used();
-    //         self.mesh.mark_as_used();
-    //         self.scene.mark_as_used();
-    //     }
-    // }
-
-    // impl<'t, T> Ctx<'t, T>
-    // where T: Debug {
-    //     #[track_caller]
-    //     #[inline(always)]
-    //     pub fn as_refs_mut(&mut self) -> borrow::AllFieldsUsed<
-    //         borrow::ExplicitParams<
-    //             Self,
-    //             borrow::RefWithFields<Ctx<'t, T>, borrow::FieldsAsMut<'_, Ctx<'t, T>>>
-    //         >
-    //     > {
-    //         borrow::AllFieldsUsed::new(
-    //             borrow::ExplicitParams::new(
-    //                 CtxRef {
-    //                     version:  borrow::Field::new("version", &mut self.version),
-    //                     geometry: borrow::Field::new("geometry", &mut self.geometry),
-    //                     material: borrow::Field::new("material", &mut self.material),
-    //                     mesh:     borrow::Field::new("mesh", &mut self.mesh),
-    //                     scene:    borrow::Field::new("scene", &mut self.scene),
-    //                     marker: borrow::PhantomData,
-    //                 }
-    //             )
-    //         )
-    //     }
-    // }
-
 }
-
-
-// #[allow(non_camel_case_types)]
-// impl<version_target, geometry_target, material_target, mesh_target, scene_target,
-//      version,        geometry,        material,        mesh,        scene>
-// ReplaceFields<HList![version_target, geometry_target, material_target, mesh_target, scene_target]>
-// for CtxRef<version, geometry, material, mesh, scene> {
-//     type Result = CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>;
-// }
-
-
-
-
-// type Foo<'t> = RefWithFields<
-//     Ctx<'static, usize>,
-//     SetFieldAsMut<'t, Ctx<'static, usize>, Str!(geometry),
-//         FieldsAsHidden<Ctx<'static, usize>>
-//     >
-// >;
 
 use sandbox::*;
 
@@ -2236,10 +1889,10 @@ pub fn test() {
 
 }
 
-fn test2<'s, 't>(mut ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
+fn test2<'s, 't>(mut ctx: partial!(&'t<mut *>Ctx<'s, usize>)) {
     {
-        // let _y = ctx.extract_geometry();
-        // let _y = ctx.extract_version();
+        let _y = ctx.extract_geometry();
+        let _y = ctx.extract_version();
     }
     {
         // let _x = ctx.split::<p!(&<'_ mut geometry>Ctx<'s, usize>)>();
@@ -2247,19 +1900,24 @@ fn test2<'s, 't>(mut ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
     println!(">>>");
     test5(ctx.partial_borrow());
     println!("<<<");
-    &*ctx.scene;
+    // &*ctx.scene;
 
 }
 
-fn test5<'t>(_ctx: p!(&'t<mut geometry>Ctx<'_, usize>)) {
-    &*_ctx.geometry;
+fn test5<'t>(_ctx: partial!(&<geometry>Ctx<'_, usize>)) {
+    // &*_ctx.geometry;
     println!("yo")
 }
 
+// fn test5<'t>(_ctx: p!(&'t<mut geometry>Ctx<'_, usize>)) {
+//     &*_ctx.geometry;
+//     println!("yo")
+// }
 
 
 
 
-impl<'t, T: Debug> p!(&<>Ctx<'t, T>) {
+
+impl<'t, T: Debug> partial!(&<>Ctx<'t, T>) {
 
 }

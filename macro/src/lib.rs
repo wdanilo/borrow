@@ -428,6 +428,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //         >
     //     >
     // {
+    //     #[track_caller]
     //     #[inline(always)]
     //     pub fn extract_version(&'__s mut self) -> (
     //         borrow::Field<&'__tgt mut &'t T>,
@@ -471,6 +472,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //         >
     //     >
     // {
+    //     #[track_caller]
     //     #[inline(always)]
     //     pub fn extract_geometry(&'__s mut self) -> (
     //         borrow::Field<&'__tgt mut GeometryCtx>,
@@ -525,6 +527,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                     >
                 >
             {
+                #[track_caller]
                 #[inline(always)]
                 pub fn #fn_ident(&'__s mut self) -> (
                     borrow::Field<#field_ref_mut>,
@@ -549,7 +552,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // Generates:
     //
     // ```
-    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::MarkAllFieldsAsUsed
+    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::HasUsageTrackedFields
     // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
     //     #[inline(always)]
     //     fn mark_all_fields_as_used(&self) {
@@ -559,14 +562,28 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //         self.mesh.mark_as_used();
     //         self.scene.mark_as_used();
     //     }
+    //
+    //     #[inline(always)]
+    //     fn disable_field_usage_tracking_shallow(&self) {
+    //         self.version.disable_usage_tracking_shallow();
+    //         self.geometry.disable_usage_tracking_shallow();
+    //         self.material.disable_usage_tracking_shallow();
+    //         self.mesh.disable_usage_tracking_shallow();
+    //         self.scene.disable_usage_tracking_shallow();
+    //     }
     // }
     // ```
     out.push(quote! {
-        impl<__S__, #(#fields_param,)*> borrow::MarkAllFieldsAsUsed
+        impl<__S__, #(#fields_param,)*> borrow::HasUsageTrackedFields
         for #ref_ident<__S__, #(#fields_param,)*> {
             #[inline(always)]
             fn mark_all_fields_as_used(&self) {
                 #(self.#fields_ident.mark_as_used();)*
+            }
+
+            #[inline(always)]
+            fn disable_field_usage_tracking_shallow(&self) {
+                #(self.#fields_ident.disable_usage_tracking_shallow();)*
             }
         }
     });
@@ -578,24 +595,22 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // where T: Debug {
     //     #[track_caller]
     //     #[inline(always)]
-    //     pub fn as_refs_mut(&mut self) -> borrow::AllFieldsUsed<
-    //         borrow::ExplicitParams<
-    //             Self,
-    //             borrow::RefWithFields<Ctx<'t, T>, borrow::FieldsAsMut<'_, Ctx<'t, T>>>
-    //         >
+    //     pub fn as_refs_mut(&mut self) -> borrow::ExplicitParams<
+    //         Self,
+    //         borrow::RefWithFields<Ctx<'t, T>, borrow::FieldsAsMut<'_, Ctx<'t, T>>>
     //     > {
-    //         borrow::AllFieldsUsed::new(
-    //             borrow::ExplicitParams::new(
-    //                 CtxRef {
-    //                     version:  borrow::Field::new("version", &mut self.version),
-    //                     geometry: borrow::Field::new("geometry", &mut self.geometry),
-    //                     material: borrow::Field::new("material", &mut self.material),
-    //                     mesh:     borrow::Field::new("mesh", &mut self.mesh),
-    //                     scene:    borrow::Field::new("scene", &mut self.scene),
-    //                     marker: borrow::PhantomData,
-    //                 }
-    //             )
-    //         )
+    //         let out = borrow::ExplicitParams::new(
+    //             CtxRef {
+    //                 version:  borrow::Field::new("version", &mut self.version),
+    //                 geometry: borrow::Field::new("geometry", &mut self.geometry),
+    //                 material: borrow::Field::new("material", &mut self.material),
+    //                 mesh:     borrow::Field::new("mesh", &mut self.mesh),
+    //                 scene:    borrow::Field::new("scene", &mut self.scene),
+    //                 marker: borrow::PhantomData,
+    //             }
+    //         );
+    //         borrow::HasUsageTrackedFields::disable_field_usage_tracking_shallow(&out);
+    //         out
     //     }
     // }
     // ```
@@ -604,25 +619,23 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
         where #bounds {
             #[track_caller]
             #[inline(always)]
-            pub fn as_refs_mut(&mut self) -> borrow::AllFieldsUsed<
-                borrow::ExplicitParams<
-                    Self,
-                    borrow::RefWithFields<#ident<#params>, borrow::FieldsAsMut<'_, #ident<#params>>>
-                >
+            pub fn as_refs_mut(&mut self) -> borrow::ExplicitParams<
+                Self,
+                borrow::RefWithFields<#ident<#params>, borrow::FieldsAsMut<'_, #ident<#params>>>
             > {
-                borrow::AllFieldsUsed::new(
-                    borrow::ExplicitParams::new(
-                        #ref_ident {
-                            #(
-                                #fields_ident: borrow::Field::new(
-                                    stringify!(#fields_ident),
-                                    &mut self.#fields_ident
-                                ),
-                            )*
-                            marker: borrow::PhantomData,
-                        }
-                    )
-                )
+                let out = borrow::ExplicitParams::new(
+                    #ref_ident {
+                        #(
+                            #fields_ident: borrow::Field::new(
+                                stringify!(#fields_ident),
+                                &mut self.#fields_ident
+                            ),
+                        )*
+                        marker: borrow::PhantomData,
+                    }
+                );
+                borrow::HasUsageTrackedFields::disable_field_usage_tracking_shallow(&out);
+                out
             }
         }
     });
