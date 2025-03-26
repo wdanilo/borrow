@@ -2,39 +2,28 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 
-use proc_macro::TokenStream;
+use std::fmt::Debug;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Path};
+use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields};
 use itertools::Itertools;
-use proc_macro2::{Span};
-use proc_macro2 as pm;
-
+use proc_macro2::TokenStream;
 
 // =============
 // === Utils ===
 // =============
 
-/// Get the current crate name;
-fn crate_name() -> Ident {
-    let macro_lib = env!("CARGO_PKG_NAME");
-    let suffix = "-macro";
-    if !macro_lib.ends_with(suffix) { panic!("Internal error.") }
-    let crate_name = &macro_lib[..macro_lib.len() - suffix.len()].replace('-',"_");
-    Ident::new(crate_name, Span::call_site())
+fn snake_to_camel(s: &str) -> String {
+    s.split('_').map(|s| {
+        let mut chars = s.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(f) => f.to_uppercase().chain(chars).collect()
+        }
+    }).collect()
 }
 
-/// Extract the module macro attribute.
-fn extract_module_attr(input: &DeriveInput) -> Path {
-    let mut module: Option<Path> = None;
-    for attr in &input.attrs {
-        if attr.path().is_ident("module") {
-            let tokens = attr.meta.require_list().unwrap().tokens.clone();
-            if let Ok(path) = syn::parse2::<Path>(tokens) {
-                module = Some(path);
-            }
-        }
-    }
-    module.expect("The 'module' attribute is required.")
+fn internal(s: &str) -> String {
+    format!("__{s}")
 }
 
 
@@ -42,26 +31,11 @@ fn extract_module_attr(input: &DeriveInput) -> Path {
 // === Macro ===
 // =============
 
-/// Derive impl. Comments in the code show expansion of the following example struct:
-/// ```ignore
-/// pub struct Ctx<'v, V: Debug> {
-///     version: &'v V,
-///     pub geometry: GeometryCtx,
-///     pub material: MaterialCtx,
-///     pub mesh: MeshCtx,
-///     pub scene: SceneCtx,
-/// }
-/// ```
-#[allow(clippy::cognitive_complexity)]
-#[proc_macro_derive(Partial, attributes(module))]
-pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
-    let lib = crate_name();
+fn meta_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+
     let input = parse_macro_input!(input as DeriveInput);
-    let module = extract_module_attr(&input);
 
-    let struct_ident = input.ident;
-    let ref_struct_ident = Ident::new(&format!("{struct_ident}Ref"), struct_ident.span());
-
+    let ident = input.ident;
     let fields = if let Data::Struct(data) = &input.data {
         if let Fields::Named(fields) = &data.fields {
             fields.named.iter().collect::<Vec<_>>()
@@ -72,419 +46,591 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
         Vec::new()
     };
 
-    let generics = input.generics.params.iter().collect_vec();
-    let struct_lifetimes = generics.iter().filter_map(|g| {
-        if let syn::GenericParam::Lifetime(lt) = g {
+    let field_types = fields.iter().map(|f| &f.ty).collect_vec();
+
+    let generics_vec = input.generics.params.iter().collect_vec();
+
+    let lifetimes = generics_vec.iter().filter_map(|t| {
+        if let syn::GenericParam::Lifetime(lt) = t {
             Some(lt)
         } else {
             None
         }
     }).collect_vec();
 
-    let struct_params = generics.iter().filter_map(|g| {
-        if let syn::GenericParam::Type(ty) = g {
+    let ty_params = generics_vec.iter().filter_map(|t| {
+        if let syn::GenericParam::Type(ty) = t {
             Some(ty.ident.clone())
         } else {
             None
         }
     }).collect_vec();
 
-    let struct_inline_bounds = generics.iter().filter_map(|g| {
-        if let syn::GenericParam::Type(ty) = g {
-            (!ty.bounds.is_empty()).then_some(ty)
+    let params = quote! {#(#lifetimes,)* #(#ty_params,)*};
+
+    let bounds_vec = {
+        let inline_bounds = generics_vec.iter().filter_map(|t| {
+            if let syn::GenericParam::Type(ty) = t {
+                (!ty.bounds.is_empty()).then_some(ty)
+            } else {
+                None
+            }
+        }).collect_vec();
+
+        let where_bounds = input.generics.where_clause.as_ref().map(|t|
+            t.predicates.iter().collect_vec()
+        ).unwrap_or_default();
+
+        inline_bounds.iter().map(|t| quote! {#t})
+            .chain(where_bounds.iter().map(|t| quote! {#t})).collect_vec()
+
+    };
+
+    let bounds = quote! {#(#bounds_vec,)*};
+
+    // === Ctx 1 ===
+
+    let has_fields_for_struct = quote! {
+        impl<#params> borrow::HasFields for #ident<#params>
+        where #bounds {
+            type Fields = borrow::HList![#(#field_types,)*];
+        }
+    };
+
+    // === Ctx 2 ===
+
+    let has_fields_ext_for_struct = {
+        let fields_hidden = field_types.iter().map(|_| quote! {borrow::Hidden});
+        let fields_ref    = field_types.iter().map(|t| quote! {&'__a #t});
+        let fields_mut    = field_types.iter().map(|t| quote! {&'__a mut #t});
+        quote! {
+            impl<#params> borrow::HasFieldsExt for #ident<#params>
+            where #bounds {
+                type FieldsAsHidden = borrow::HList![ #(#fields_hidden,)* ];
+                type FieldsAsRef<'__a> = borrow::HList![ #(#fields_ref,)* ] where Self: '__a;
+                type FieldsAsMut<'__a> = borrow::HList![ #(#fields_mut,)* ] where Self: '__a;
+            }
+        }
+    };
+
+    // === Ctx 3 ===
+
+    let has_field_for_struct = {
+        let impls = fields.iter().enumerate().map(|(i, field)| {
+            let field_ident = &field.ident;
+            let field_ty = &field.ty;
+            let n = Ident::new(&format!("N{i}"), field.ident.as_ref().unwrap().span());
+            quote! {
+                impl<#params> borrow::HasField<borrow::Str!(#field_ident)>
+                for #ident<#params>
+                where #bounds {
+                    type Type = #field_ty;
+                    type Index = borrow::hlist::#n;
+                    #[inline(always)]
+                    fn take_field(self) -> Self::Type {
+                        self.#field_ident
+                    }
+                }
+            }
+        }).collect_vec();
+        quote! { #(#impls)* }
+    };
+
+
+    let out = quote! {
+        #has_fields_for_struct
+        #has_fields_ext_for_struct
+        #has_field_for_struct
+    };
+
+    out.into()
+}
+
+
+fn get_fields(input: &DeriveInput) -> Vec<&syn::Field> {
+    if let Data::Struct(data) = &input.data {
+        if let Fields::Named(fields) = &data.fields {
+            fields.named.iter().collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    }
+}
+
+fn get_params(input: &DeriveInput) -> TokenStream {
+    let lifetimes = input.generics.params.iter().filter_map(|t| {
+        if let syn::GenericParam::Lifetime(lt) = t {
+            Some(lt)
         } else {
             None
         }
     }).collect_vec();
 
-    let struct_where_bounds = input.generics.where_clause.as_ref().map(|w| w.predicates.iter().collect_vec()).unwrap_or_default();
+    let ty_params = input.generics.params.iter().filter_map(|t| {
+        if let syn::GenericParam::Type(ty) = t {
+            Some(ty.ident.clone())
+        } else {
+            None
+        }
+    }).collect_vec();
+    quote! {#(#lifetimes,)* #(#ty_params,)*}
+}
 
-    let struct_bounds = struct_inline_bounds.iter().map(|ty| {
-        quote! {#ty}
-    }).chain(struct_where_bounds.iter().map(|p| quote! {#p})).collect_vec();
+fn get_bounds(input: &DeriveInput) -> TokenStream {
+    let inline_bounds = input.generics.params.iter().filter_map(|t| {
+        if let syn::GenericParam::Type(ty) = t {
+            (!ty.bounds.is_empty()).then_some(quote!{#ty})
+        } else {
+            None
+        }
+    }).collect_vec();
 
-    let field_vis = fields.iter().map(|f| f.vis.clone()).collect_vec();
-    let field_idents = fields.iter().map(|f| f.ident.as_ref().unwrap()).collect_vec();
-    let field_types = fields.iter().map(|f| &f.ty).collect_vec();
-    let params = field_idents.iter().map(|i| Ident::new(&format!("__{i}"), i.span())).collect_vec();
+    let where_bounds = input.generics.where_clause.as_ref().map(|t|
+        t.predicates.iter().map(|t| quote!{#t}).collect_vec()
+    ).unwrap_or_default();
+
+    quote! {#(#inline_bounds,)* #(#where_bounds,)*}
+}
+
+// The internal macro documentation shows expansion parts for the following input:
+// ```
+// pub struct GeometryCtx {}
+// pub struct MaterialCtx {}
+// pub struct MeshCtx {}
+// pub struct SceneCtx {}
+//
+// #[derive(borrow::Partial)]
+// pub struct Ctx<'t, T: Debug> {
+//     pub version: &'t T,
+//     pub geometry: GeometryCtx,
+//     pub material: MaterialCtx,
+//     pub mesh: MeshCtx,
+//     pub scene: SceneCtx,
+// }
+//```
+#[allow(clippy::cognitive_complexity)]
+#[proc_macro_derive(Partial, attributes(module))]
+pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
+
+    let input_raw2 = input_raw.clone();
+    let input = parse_macro_input!(input_raw2 as DeriveInput);
+
+    let ident = &input.ident;
+    let fields = get_fields(&input);
+    let params = get_params(&input);
+    let bounds = get_bounds(&input);
+
+    let fields_vis = fields.iter().map(|f| f.vis.clone()).collect_vec();
+    let fields_ident = fields.iter().map(|f| f.ident.as_ref().unwrap()).collect_vec();
+    let fields_ty = fields.iter().map(|f| &f.ty).collect_vec();
+
+    // Fields in the form __$upper_case_field__
+    let fields_param = fields.iter().map(|f| {
+        let ident = f.ident.as_ref().unwrap();
+        Ident::new(&format!("__{}", snake_to_camel(&ident.to_string())), ident.span())
+    }).collect_vec();
+
+
+
+    let mut out: Vec<TokenStream> = vec![];
+
+    // === Ctx 1 ===
+
+    out.push(meta_derive(input_raw.clone()).into());
+
+    // === CtxRef 1 ===
+
+    let ref_ident = Ident::new(&format!("{ident}Ref"), ident.span());
 
     // Generates:
-    // #[repr(C)]
-    // pub struct CtxRef<version, geometry, material, mesh, scene> {
-    //     version: version,
-    //     pub geometry: geometry,
-    //     pub material: material,
-    //     pub mesh: mesh,
-    //     pub scene: scene,
+    //
+    // ```
+    // pub struct CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
+    //     pub version: borrow::Field<__Version>,
+    //     pub geometry: borrow::Field<__Geometry>,
+    //     pub material: borrow::Field<__Material>,
+    //     pub mesh: borrow::Field<__Mesh>,
+    //     pub scene: borrow::Field<__Scene>,
+    //     marker: std::marker::PhantomData<__S__>
     // }
-    let ref_struct = quote! {
-        #[derive(Debug)]
-        #[repr(C)]
-        #[allow(non_camel_case_types)]
-        pub struct #ref_struct_ident<#(#params,)*> {
-            #(#field_vis #field_idents : #params),*
-        }
-    };
-
-    // Generates:
-    // impl<version_target, geometry_target, material_target, mesh_target, scene_target,
-    //      version,        geometry,        material,        mesh,        scene>
-    // PartialInferenceGuide<
-    //       CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>
-    // > for CtxRef<version,        geometry,        material,        mesh,        scene> {}
-    let impl_inference_guide = {
-        let target_params = params.iter().map(|i| Ident::new(&format!("{i}_target"), i.span())).collect_vec();
+    // ```
+    let ref_struct_def = {
         quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#params,)* #(#target_params,)*>
-            #lib::PartialInferenceGuide<#ref_struct_ident<#(#target_params,)*>>
-            for #ref_struct_ident<#(#params,)*> {}
+            pub struct #ref_ident<__S__, #(#fields_param,)*> {
+                #(#fields_vis #fields_ident: borrow::Field<#fields_param>,)*
+                marker: std::marker::PhantomData<__S__>
+            }
         }
     };
 
+    out.push(ref_struct_def.clone());
+    out.push(meta_derive(ref_struct_def.into()).into());
+
     // Generates:
-    // impl<'t, 'v, V, __version, __geometry, __material, __mesh, __scene>
-    // AsRefs<'t, CtxRef<__version, __geometry, __material, __mesh, __scene>> for Ctx<'v, V>
+    //
+    // ```
+    // impl<'t, T, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // borrow::AsRefWithFields<borrow::HList![__Version, __Geometry, __Material, __Mesh, __Scene]>
+    // for Ctx<'t, T>
+    // where T: Debug {
+    //     type Output = CtxRef<Ctx<'t, T>, __Version, __Geometry, __Material, __Mesh, __Scene>;
+    // }
+    // ```
+    out.push(
+        quote! {
+            impl<#params #(#fields_param,)*>
+            borrow::AsRefWithFields<borrow::HList![#(#fields_param,)*]>
+            for #ident<#params>
+            where T: Debug {
+                type Output = #ref_ident<#ident<#params>, #(#fields_param,)*>;
+            }
+        }
+    );
+
+    // Generates:
+    //
+    // ```
+    // #[allow(non_camel_case_types)]
+    // #[allow(non_snake_case)]
+    // impl<'__a__, __S__,
+    //     __Version, __Geometry, __Material, __Mesh, __Scene,
+    //     __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target,
+    //     __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>
+    // borrow::Partial<'__a__, CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
+    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
     // where
-    //     V:           Debug,
-    //     (&'v V):     RefCast<'t, __version>,
-    //     GeometryCtx: RefCast<'t, __geometry>,
-    //     MaterialCtx: RefCast<'t, __material>,
-    //     MeshCtx:     RefCast<'t, __mesh>,
-    //     SceneCtx:    RefCast<'t, __scene>,
+    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Version, __Version__Target, Rest=__Version__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Geometry, __Geometry__Target, Rest=__Geometry__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Material, __Material__Target, Rest=__Material__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Mesh, __Mesh__Target, Rest=__Mesh__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Scene, __Scene__Target, Rest=__Scene__Rest>,
     // {
-    //     fn as_refs_impl(&'t mut self) -> CtxRef<__version, __geometry, __material, __mesh, __scene> {
-    //         CtxRef {
-    //             version:  RefCast::ref_cast(&mut self.version),
-    //             geometry: RefCast::ref_cast(&mut self.geometry),
-    //             material: RefCast::ref_cast(&mut self.material),
-    //             mesh:     RefCast::ref_cast(&mut self.mesh),
-    //             scene:    RefCast::ref_cast(&mut self.scene),
-    //         }
+    //     type Rest = CtxRef<__S__, __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>;
+    //     #[track_caller]
+    //     #[inline(always)]
+    //     fn split_impl(
+    //         &'__a__ mut self
+    //     ) -> (
+    //         CtxRef<
+    //             __S__,
+    //             __Version__Target,
+    //             __Geometry__Target,
+    //             __Material__Target,
+    //             __Mesh__Target,
+    //             __Scene__Target
+    //         >,
+    //         Self::Rest
+    //     ) {
+    //         use borrow::Acquire;
+    //         let (version, __version__rest) = borrow::AcquireMarker::acquire(&mut self.version);
+    //         let (geometry, __geometry__rest) = borrow::AcquireMarker::acquire(&mut self.geometry);
+    //         let (material, __material__rest) = borrow::AcquireMarker::acquire(&mut self.material);
+    //         let (mesh, __mesh__rest) = borrow::AcquireMarker::acquire(&mut self.mesh);
+    //         let (scene, __scene__rest) = borrow::AcquireMarker::acquire(&mut self.scene);
+    //         (
+    //             CtxRef {
+    //                 version,
+    //                 geometry,
+    //                 material,
+    //                 mesh,
+    //                 scene,
+    //                 marker: std::marker::PhantomData
+    //             },
+    //             CtxRef {
+    //                 version: __version__rest,
+    //                 geometry: __geometry__rest,
+    //                 material: __material__rest,
+    //                 mesh: __mesh__rest,
+    //                 scene: __scene__rest,
+    //                 marker: std::marker::PhantomData
+    //             }
+    //         )
     //     }
     // }
-    let impl_as_refs = quote! {
-        #[allow(non_camel_case_types)]
-        impl<'_t, #(#struct_lifetimes,)* #(#struct_params,)* #(#params,)*>
-        #lib::AsRefs<'_t, #ref_struct_ident<#(#params,)*>> for #struct_ident<#(#struct_lifetimes,)* #(#struct_params,)*>
-        where
-            #(#struct_bounds,)*
-            #(#field_types: #lib::RefCast<'_t, #params>,)*
-        {
-            #[inline(always)]
-            fn as_refs_impl(& '_t mut self) -> #ref_struct_ident<#(#params,)*> {
-                #ref_struct_ident {
-                    #(#field_idents: #lib::RefCast::ref_cast(&mut self.#field_idents),)*
-                }
-            }
-        }
-    };
+    // ```
+    out.push({
+        let field_params_target = fields_param.iter().map(|i| {
+            Ident::new(&format!("{i}{}", internal("Target")), i.span())
+        }).collect_vec();
 
-    // Generates:
-    // impl<'v, V> Ctx<'v, V>
-    // where V: Debug
-    // {
-    //     pub fn as_refs_mut(&mut self) -> CtxRef<&mut &'v V, &mut GeometryCtx, &mut MaterialCtx, &mut MeshCtx, &mut SceneCtx> {
-    //         CtxRef {
-    //             version:  &mut self.version,
-    //             geometry: &mut self.geometry,
-    //             material: &mut self.material,
-    //             mesh:     &mut self.mesh,
-    //             scene:    &mut self.scene,
-    //         }
-    //     }
-    // }
-    let impl_as_refs_mut = {
-        quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#struct_lifetimes,)* #(#struct_params,)*> #struct_ident<#(#struct_lifetimes,)* #(#struct_params,)*>
-            where
-                #(#struct_bounds,)*
-            {
-                #[inline(always)]
-                pub fn as_refs_mut(&mut self) -> #ref_struct_ident<#(&mut #field_types,)*> {
-                    #ref_struct_ident {
-                        #(#field_idents: &mut self.#field_idents,)*
-                    }
-                }
-            }
-        }
-    };
+        let field_params_rest = fields_param.iter().map(|i| {
+            Ident::new(&format!("{i}{}", internal("Rest")), i.span())
+        }).collect_vec();
 
-
-    // Generates:
-    // impl<'v, V: Debug> HasFields for Ctx<'v, V> {
-    //     type Fields = HList![&'v V, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
-    // }
-    let impl_has_fields = {
-        quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#struct_lifetimes,)* #(#struct_params,)*>
-            #lib::HasFields for #struct_ident<#(#struct_lifetimes,)* #(#struct_params,)*>
-            where #(#struct_bounds,)* {
-                type Fields = #lib::HList!{#(#field_types,)*};
-            }
-        }
-    };
-
-    // Generates:
-    // impl<version, geometry, material, mesh, scene>
-    // HasFields for CtxRef<version, geometry, material, mesh, scene> {
-    //     type Fields = HList![version, geometry, material, mesh, scene];
-    // }
-    let impl_ref_has_fields = {
-        quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#params,)*>
-            #lib::HasFields for #ref_struct_ident<#(#params,)*> {
-                type Fields = #lib::HList!{#(#params,)*};
-            }
-        }
-    };
-
-    // Generates:
-    // impl<version_target, geometry_target, material_target, mesh_target, scene_target,
-    //      version,        geometry,        material,        mesh,        scene>
-    // ReplaceFields<HList![version_target, geometry_target, material_target, mesh_target, scene_target]>
-    // for CtxRef<version, geometry, material, mesh, scene> {
-    //     type Result = CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>;
-    // }
-    let impl_from_fields = {
-        let target_params = params.iter().map(|i| Ident::new(&format!("{i}_target"), i.span())).collect_vec();
-        quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#params,)* #(#target_params,)*>
-            #lib::ReplaceFields<#lib::HList!{#(#target_params,)*}> for #ref_struct_ident<#(#params,)*> {
-                type Result = #ref_struct_ident<#(#target_params,)*>;
-            }
-        }
-    };
-
-    // Generates:
-    // #[macro_export]
-    // macro_rules! _Ctx {
-    //     (@ [$($ps:tt)*] $lt:lifetime $ts:tt [, $($lt2:lifetime)? * $($xs:tt)*]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N0, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N1, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N2, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N3, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N4, Ctx<$($ps)*>> }]
-    //         ] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime $ts:tt [, $($lt2:lifetime)? mut * $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N0, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N1, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N2, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N3, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N4, Ctx<$($ps)*>> }]
-    //         ] [$ ($xs) *] }
-    //     };
-    //
-    //
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? version $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [[lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N0, Ctx<$($ps)*>>}] $t1 $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? geometry $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N1, Ctx<$($ps)*>>}] $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? material $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N2, Ctx<$($ps)*>>}] $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? mesh $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N3, Ctx<$($ps)*>>}] $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? scene $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 $t3 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N4, Ctx<$($ps)*>>}]] [$ ($xs) *] }
-    //     };
-    //
-    //
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut version $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [[lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N0, Ctx<$($ps)*>>}] $t1 $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut geometry $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N1, Ctx<$($ps)*>>}] $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)?mut material $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N2, Ctx<$($ps)*>>}] $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut mesh $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N3, Ctx<$($ps)*>>}] $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut scene $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 $t3 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N4, Ctx<$($ps)*>>}]] [$ ($xs) *] }
-    //     };
-    //
-    //
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! version $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [[Hidden<FieldAt<hlist::N0, Ctx<$($ps)*>>>] $t1 $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! geometry $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 [Hidden<FieldAt<hlist::N1, Ctx<$($ps)*>>>] $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! material $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 [Hidden<FieldAt<hlist::N2, Ctx<$($ps)*>>>] $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! mesh $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 [Hidden<FieldAt<hlist::N3, Ctx<$($ps)*>>>] $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! scene $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 $t3 [Hidden<FieldAt<hlist::N4, Ctx<$($ps)*>>>]] [$ ($xs) *] }
-    //     };
-    //
-    //
-    //     (@ $ps:tt $lt:lifetime [$ ([$ ($ts:tt) *]) *] [$ (,) *]) => {
-    //         CtxRef < $ ($ ($ts) *), * >
-    //     };
-    //
-    //     (@ $($ts:tt)*) => { MACRO_EXPAND_ERROR! { $($ts)* } };
-    //
-    //     ([$($ps:tt)*] $lt:lifetime $ ($ts:tt) *) => {
-    //         _Ctx! { @ [$($ps)*] $lt [
-    //             [Hidden<FieldAt<hlist::N0, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N1, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N2, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N3, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N4, Ctx<$($ps)*>>>]
-    //         ] [$($ts)*] }
-    //     };
-    //
-    //     ([$($ps:tt)*] $($ts:tt)*) => {
-    //         _Ctx! { @ [$($ps)*] '_ [
-    //             [Hidden<FieldAt<hlist::N0, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N1, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N2, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N3, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N4, Ctx<$($ps)*>>>]
-    //         ] [, $ ($ts) *] }
-    //     };
-    // }
-    // pub use _Ctx as Ctx;
-    let ref_macro = {
-        let fields_at = (0..field_idents.len()).map(|i| {
-            let n = Ident::new(&format!("N{i}"), Span::call_site());
-            quote! {#lib::FieldAt<#lib::hlist::#n, #struct_ident<$($ps)*>>}
-        }
+        let fields_rest_ident = fields_ident.iter().map(|i|
+            Ident::new(&format!("{}{}", internal(&i.to_string()), internal("rest")), i.span())
         ).collect_vec();
 
-        let all_hidden = quote! {#([#lib::Hidden<#fields_at>])*};
-        let all_ref = quote! {#([#lib::lifetime_chooser!{[$lt $($lt2)?] #fields_at}])*};
-        let all_ref_mut = quote! {#([#lib::lifetime_chooser!{[$lt $($lt2)?] mut #fields_at}])*};
-        let ts_idents = field_idents.iter().enumerate().map(|(i, _)| Ident::new(&format!("t{i}"), Span::call_site())).collect_vec();
-        let ts = ts_idents.iter().map(|t| quote!($#t)).collect_vec();
-        let struct_ident2 = Ident::new(&format!("_{struct_ident}"), struct_ident.span());
-        let gen_patterns = |pattern: pm::TokenStream, f: Box<dyn Fn(&pm::TokenStream) -> pm::TokenStream>| {
-            field_idents.iter().zip(fields_at.iter()).enumerate().map(|(i, (name, tp))| {
-                let result = f(tp);
-                let mut results = ts.iter().collect_vec();
-                results[i] = &result;
-                quote! {
-                    (@ [$($ps:tt)*] $lt:lifetime [#(#ts:tt)*] [, #pattern #name $($xs:tt)*]) => {
-                        #module::#struct_ident! {@ [$($ps)*]  $lt [#(#results)*] [$($xs)*]}
-                    };
-                }
-            }).collect_vec()
-        };
-        let patterns_ref = gen_patterns(quote!{$($lt2:lifetime)? $(ref)?}, Box::new(|t: &pm::TokenStream| quote!{[#lib::lifetime_chooser!{[$lt $($lt2)?] #t}]}));
-        let patterns_ref_mut = gen_patterns(quote!{$($lt2:lifetime)? mut}, Box::new(|t: &pm::TokenStream| quote!{[#lib::lifetime_chooser!{[$lt $($lt2)?] mut #t}]}));
-        let patterns_ref_none = gen_patterns(quote!{!}, Box::new(|t: &pm::TokenStream| quote!{[#lib::Hidden<#t >]}));
-        quote! {
-            #[macro_export]
-            #[allow(clippy::crate_in_macro_def)]
-            macro_rules! #struct_ident2 {
-                (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, ! * $($xs:tt)*]) => {
-                    #module::#struct_ident! {@ [$($ps)*]  $lt [#all_hidden] [$($xs)*]}
-                };
-                (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, $($lt2:lifetime)? * $($xs:tt)*]) => {
-                    #module::#struct_ident! {@ [$($ps)*]  $lt [#all_ref] [$($xs)*]}
-                };
-                (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, $($lt2:lifetime)? mut * $($xs:tt)*]) => {
-                    #module::#struct_ident! {@ [$($ps)*]  $lt [#all_ref_mut] [$($xs)*]}
-                };
-                #(#patterns_ref)*
-                #(#patterns_ref_mut)*
-                #(#patterns_ref_none)*
-                (@ [$($ps:tt)*]  $lt:lifetime [$([$($ts:tt)*])*] [$(,)*]) => { #module::#ref_struct_ident<$($($ts)*),*> };
-                (@ [$($ps:tt)*]  $($ts:tt)*) => { MACRO_EXPANSION_ERROR!($($ts)*) };
-
-                ([$($ps:tt)*] $lt:lifetime, $($ts:tt)*) => {
-                    #module::#struct_ident! {@ [$($ps)*] $lt [#all_hidden] [, $($ts)*]}
-                };
-                ([$($ps:tt)*] $($ts:tt)*) => {
-                    #module::#struct_ident! {@ [$($ps)*] '_ [#all_hidden] [,$($ts)*]}
-                };
-            }
-
-            pub use #struct_ident2 as #struct_ident;
-        }
-    };
-
-    // Generates:
-    // #[allow(non_camel_case_types)]
-    // impl<'t, version, geometry, material, mesh, scene>
-    //     CtxRef<version, geometry, material, mesh, scene>
-    // where
-    // {
-    //     #[inline(always)]
-    //     pub fn extract_version(&'t mut self) -> (
-    //         <version as RefFlatten<'t>>::Output,
-    //         &'t mut CtxRef<Acquired<version, version>, geometry, material, mesh, scene>
-    //     ) where version: Acquire<version> + RefFlatten<'t> {
-    //         let rest = unsafe { &mut *(self as *mut _ as *mut _) };
-    //         (self.version.ref_flatten(), rest)
-    //     }
-    //
-    //     ...
-    // }
-    let impl_extract_fields = {
-        let idents_str = field_idents.iter().map(|t| t.to_string()).collect_vec();
-        let fns = idents_str.iter().map(|field_str| {
-            let params = idents_str.iter().map(|i| {
-                if i == field_str {
-                    let ident = Ident::new(&format!("__{i}"), Span::call_site());
-                    quote!{#lib::Acquired<#ident, #ident>}
-                } else {
-                    let ident = Ident::new(&format!("__{i}"), Span::call_site());
-                    quote!{#ident}
-                }
-            }).collect_vec();
-            let param = Ident::new(&format!("__{field_str}"), Span::call_site());
-            let field = Ident::new(field_str, Span::call_site());
-            let name = Ident::new(&format!("extract_{field}"), field.span());
-            quote! {
-                #[inline(always)]
-                pub fn #name(&'t mut self) -> (
-                    <#param as #lib::RefFlatten<'t>>::Output,
-                    &'t mut #ref_struct_ident<#(#params,)*>
-                ) where #param: #lib::Acquire<#param> + #lib::RefFlatten<'t> {
-                    let rest = unsafe { &mut *(self as *mut _ as *mut _) };
-                    (self.#field.ref_flatten(), rest)
-                }
-            }
-        }).collect_vec();
         quote! {
             #[allow(non_camel_case_types)]
-            impl<'t, #(#params,)*> #ref_struct_ident<#(#params,)*> where
+            #[allow(non_snake_case)]
+            impl<'__a__, __S__,
+                #(#fields_param,)*
+                #(#field_params_target,)*
+                #(#field_params_rest,)*
+            >
+            borrow::Partial<'__a__, #ref_ident<__S__, #(#field_params_target,)*>>
+            for #ref_ident<__S__, #(#fields_param,)*>
+            where
+                #(
+                    borrow::AcquireMarker: borrow::Acquire<
+                        '__a__,
+                        #fields_param,
+                        #field_params_target,
+                        Rest=#field_params_rest
+                    >,
+                )*
             {
-                #(#fns)*
+                type Rest = #ref_ident<__S__, #(#field_params_rest,)*>;
+                #[track_caller]
+                #[inline(always)]
+                fn split_impl(
+                    &'__a__ mut self
+                ) -> (#ref_ident<__S__, #(#field_params_target,)*>, Self::Rest) {
+                    use borrow::Acquire;
+                    #(let (#fields_ident, #fields_rest_ident) =
+                        borrow::AcquireMarker::acquire(&mut self.#fields_ident);)*
+                    (
+                        #ref_ident {
+                            #(#fields_ident,)*
+                            marker: std::marker::PhantomData
+                        },
+                        #ref_ident {
+                            #(#fields_ident: #fields_rest_ident,)*
+                            marker: std::marker::PhantomData
+                        }
+                    )
+                }
             }
         }
+    });
+
+    // For each field. For the 'version' field:
+    //
+    // ```
+    // #[allow(non_camel_case_types)]
+    // impl<'a, '__s, '__src, '__tgt, 't, T, __Geometry, __Material, __Mesh, __Scene>
+    // CtxRef<Ctx<'t, T>, &'__src mut &'t T, __Geometry, __Material, __Mesh, __Scene>
+    // where
+    //     T: Debug,
+    //     (&'t T): '__tgt,
+    //     Self: borrow::Partial<
+    //         '__s,
+    //         CtxRef<
+    //             Ctx<'t, T>,
+    //             &'__tgt mut &'t T,
+    //             borrow::Hidden,
+    //             borrow::Hidden,
+    //             borrow::Hidden,
+    //             borrow::Hidden
+    //         >
+    //     >
+    // {
+    //     #[inline(always)]
+    //     pub fn extract_version(&'__s mut self) -> (
+    //         borrow::Field<&'__tgt mut &'t T>,
+    //         borrow::ExplicitParams<
+    //             Ctx<'t, T>,
+    //             <Self as borrow::Partial<
+    //                 '__s,
+    //                 CtxRef<
+    //                     Ctx<'t, T>,
+    //                     &'__tgt mut &'t T,
+    //                     borrow::Hidden,
+    //                     borrow::Hidden,
+    //                     borrow::Hidden,
+    //                     borrow::Hidden
+    //                 >
+    //             >>::Rest>
+    //     ) {
+    //         let split = borrow::SplitHelper::split(self);
+    //         (split.0.version, borrow::ExplicitParams::new(split.1))
+    //     }
+    // }
+    // ```
+    //
+    // For the 'geometry' field:
+    //
+    // ```
+    // impl<'a, '__s, '__src, '__tgt, 't, T, __Version, __Material, __Mesh, __Scene>
+    // CtxRef<Ctx<'t, T>, __Version, &'__src mut GeometryCtx, __Material, __Mesh, __Scene>
+    // where
+    //     T: Debug,
+    //     (GeometryCtx): '__tgt,
+    //     Self: borrow::Partial<
+    //         '__s,
+    //         CtxRef<
+    //             Ctx<'t, T>,
+    //             borrow::Hidden,
+    //             &'__tgt mut GeometryCtx,
+    //             borrow::Hidden,
+    //             borrow::Hidden,
+    //             borrow::Hidden
+    //         >
+    //     >
+    // {
+    //     #[inline(always)]
+    //     pub fn extract_geometry(&'__s mut self) -> (
+    //         borrow::Field<&'__tgt mut GeometryCtx>,
+    //         borrow::ExplicitParams<
+    //             Ctx<'t, T>,
+    //             <Self as borrow::Partial<
+    //                 '__s,
+    //                 CtxRef<
+    //                     Ctx<'t, T>,
+    //                     borrow::Hidden,
+    //                     &'__tgt mut GeometryCtx,
+    //                     borrow::Hidden,
+    //                     borrow::Hidden,
+    //                     borrow::Hidden
+    //                 >
+    //             >>::Rest>
+    //     ) {
+    //         let split = borrow::SplitHelper::split(self);
+    //         (split.0.geometry, borrow::ExplicitParams::new(split.1))
+    //     }
+    // }
+    // ```
+    out.extend((0..fields_param.len()).map(|i| {
+        let field_ident = &fields_ident[i];
+        let field_ty = &fields_ty[i];
+        let field_ref_mut = quote! {&'__tgt mut #field_ty};
+        let field_ref_mut2 = quote! {&'__src mut #field_ty};
+
+        let mut params2 = fields_param.clone();
+        params2.remove(i);
+
+        let mut ref_params = fields_param.iter().map(|t| quote! {#t}).collect_vec();
+        ref_params[i] = field_ref_mut2;
+
+        let mut target_params = fields_param.iter().map(|_| quote! {borrow::Hidden}).collect_vec();
+        target_params[i] = field_ref_mut.clone();
+
+        let fn_ident = Ident::new(&format!("extract_{field_ident}"), field_ident.span());
+
+        quote! {
+            #[allow(non_camel_case_types)]
+            impl<'__s, '__src, '__tgt, #params #(#params2,)*>
+            #ref_ident<#ident<#params>, #(#ref_params,)*>
+            where
+                #bounds
+                #field_ty: '__tgt,
+                Self: borrow::Partial<
+                    '__s,
+                    #ref_ident<
+                        #ident<#params>,
+                        #(#target_params,)*
+                    >
+                >
+            {
+                #[inline(always)]
+                pub fn #fn_ident(&'__s mut self) -> (
+                    borrow::Field<#field_ref_mut>,
+                    borrow::ExplicitParams<
+                        #ident<#params>,
+                        <Self as borrow::Partial<
+                            '__s,
+                            #ref_ident<
+                                #ident<#params>,
+                                #(#target_params,)*
+                            >
+                        >>::Rest>
+                ) {
+                    let split = borrow::SplitHelper::split(self);
+                    (split.0.#field_ident, borrow::ExplicitParams::new(split.1))
+                }
+            }
+        }
+    }));
+
+
+    // Generates:
+    //
+    // ```
+    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::MarkAllFieldsAsUsed
+    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
+    //     #[inline(always)]
+    //     fn mark_all_fields_as_used(&self) {
+    //         self.version.mark_as_used();
+    //         self.geometry.mark_as_used();
+    //         self.material.mark_as_used();
+    //         self.mesh.mark_as_used();
+    //         self.scene.mark_as_used();
+    //     }
+    // }
+    // ```
+    out.push(quote! {
+        impl<__S__, #(#fields_param,)*> borrow::MarkAllFieldsAsUsed
+        for #ref_ident<__S__, #(#fields_param,)*> {
+            #[inline(always)]
+            fn mark_all_fields_as_used(&self) {
+                #(self.#fields_ident.mark_as_used();)*
+            }
+        }
+    });
+
+    // Generates:
+    //
+    // ```
+    // impl<'t, T> Ctx<'t, T>
+    // where T: Debug {
+    //     #[track_caller]
+    //     #[inline(always)]
+    //     pub fn as_refs_mut(&mut self) -> borrow::AllFieldsUsed<
+    //         borrow::ExplicitParams<
+    //             Self,
+    //             borrow::RefWithFields<Ctx<'t, T>, borrow::FieldsAsMut<'_, Ctx<'t, T>>>
+    //         >
+    //     > {
+    //         borrow::AllFieldsUsed::new(
+    //             borrow::ExplicitParams::new(
+    //                 CtxRef {
+    //                     version:  borrow::Field::new("version", &mut self.version),
+    //                     geometry: borrow::Field::new("geometry", &mut self.geometry),
+    //                     material: borrow::Field::new("material", &mut self.material),
+    //                     mesh:     borrow::Field::new("mesh", &mut self.mesh),
+    //                     scene:    borrow::Field::new("scene", &mut self.scene),
+    //                     marker: borrow::PhantomData,
+    //                 }
+    //             )
+    //         )
+    //     }
+    // }
+    // ```
+    out.push(quote! {
+        impl<#params> #ident<#params>
+        where #bounds {
+            #[track_caller]
+            #[inline(always)]
+            pub fn as_refs_mut(&mut self) -> borrow::AllFieldsUsed<
+                borrow::ExplicitParams<
+                    Self,
+                    borrow::RefWithFields<#ident<#params>, borrow::FieldsAsMut<'_, #ident<#params>>>
+                >
+            > {
+                borrow::AllFieldsUsed::new(
+                    borrow::ExplicitParams::new(
+                        #ref_ident {
+                            #(
+                                #fields_ident: borrow::Field::new(
+                                    stringify!(#fields_ident),
+                                    &mut self.#fields_ident
+                                ),
+                            )*
+                            marker: borrow::PhantomData,
+                        }
+                    )
+                )
+            }
+        }
+    });
+
+    let output = quote! {
+        #(#out)*
     };
 
-    let out = quote! {
-        #ref_struct
-        #impl_inference_guide
-        #impl_as_refs
-        #impl_as_refs_mut
-        #impl_has_fields
-        #impl_ref_has_fields
-        #impl_from_fields
-        #ref_macro
-        #impl_extract_fields
-    };
-
-    // println!(">>> {}", out);
-    TokenStream::from(out)
+    // println!("OUTPUT:\n{}", output);
+    output.into()
 }
