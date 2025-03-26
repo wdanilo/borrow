@@ -61,7 +61,7 @@
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
 //!
-//! ```
+//! ```ignore
 //! use std::vec::Vec;
 //!
 //! // ============
@@ -92,7 +92,7 @@
 //!
 //! </details>
 //!
-//! ```
+//! ```ignore
 //! # use std::vec::Vec;
 //! #
 //! # type NodeId = usize;
@@ -125,7 +125,7 @@
 //!
 //! The most important code that this macro generates is:
 //!
-//! ```
+//! ```ignore
 //! # pub struct Graph {
 //! #     pub nodes: Vec<Node>,
 //! #     pub edges: Vec<Edge>,
@@ -186,7 +186,7 @@
 //! alias `p` for concise syntax. The macro allows you to parameterize borrows similarly to how you
 //! parameterize types. Let's see how the macro expansion works:
 //!
-//! ```
+//! ```ignore
 //! // Given:
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
@@ -232,7 +232,7 @@
 //! 1. **Field References**
 //!    You can parameterize a reference by providing field names this reference should contain.
 //!
-//!    ```
+//!    ```ignore
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::Hidden;
@@ -263,7 +263,7 @@
 //!    You can use `*` to include all fields and `!` to exclude fields. Later selectors override
 //!    previous ones.
 //!
-//!    ```
+//!    ```ignore
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::Hidden;
@@ -294,7 +294,7 @@
 //!    You can specify lifetimes for each reference. If a lifetime is not provided, it defaults to
 //!    `'_`. You can override the default lifetime (`'_`) by providing it as the first argument.
 //!
-//!    ```
+//!    ```ignore
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::Hidden;
@@ -340,7 +340,7 @@
 //! <sub></sub>
 //!
 //! - `partial_borrow` lets you borrow only the fields required by the target type.
-//!    ```
+//!    ```ignore
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::traits::*;
@@ -367,7 +367,7 @@
 //!    <sub></sub>
 //!
 //! - `split` is like `partial_borrow` but also returns a borrow of the remaining fields.
-//!    ```
+//!    ```ignore
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::traits::*;
@@ -396,7 +396,7 @@
 //!    <sub></sub>
 //!
 //! - `extract_$field` is like split, but for single field only.
-//!    ```
+//!    ```ignore
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    #
@@ -429,7 +429,7 @@
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
 //!
-//! ```
+//! ```ignore
 //! use std::vec::Vec;
 //! use borrow::partial as p;
 //! use borrow::traits::*;
@@ -461,7 +461,7 @@
 //!
 //! </details>
 //!
-//! ```
+//! ```ignore
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
 //! # use borrow::traits::*;
@@ -571,7 +571,7 @@
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
 //!
-//! ```
+//! ```ignore
 //! use std::vec::Vec;
 //! use borrow::partial as p;
 //! use borrow::traits::*;
@@ -617,7 +617,7 @@
 //!
 //! </details>
 //!
-//! ```
+//! ```ignore
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
 //! # use borrow::traits::*;
@@ -685,7 +685,7 @@
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
 //!
-//! ```
+//! ```ignore
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
 //! # use borrow::traits::*;
@@ -786,7 +786,7 @@
 //! inferred automatically. For example, the `detach_all_nodes` method requires self to have the
 //! `edges` and `nodes` fields mutably borrowed, but you can simply call it as follows:
 //!
-//! ```
+//! ```ignore
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
 //! # use borrow::traits::*;
@@ -853,7 +853,7 @@
 //!    to require, you will get compilation errors in all usage places that were assuming the full
 //!    usage. This allows you to easily review the places that either need to introduce a new
 //!    partial borrow or need to update their type signatures:
-//!    ```
+//!    ```ignore
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::traits::*;
