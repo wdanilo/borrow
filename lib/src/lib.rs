@@ -1263,6 +1263,10 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use hlist::Cons;
 
+pub mod traits {
+    pub use super::PartialHelper;
+}
+
 // ===============
 // === Logging ===
 // ===============
@@ -1288,18 +1292,17 @@ impl<Source, Target> NotEq<Target> for Source where
     Fields<Source>: NotEqFields<Fields<Target>> {}
 
 pub trait NotEqFields<Target> {}
-impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<Hidden, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<Hidden, T2> {}
-impl<   T, T2> NotEqFields<Cons<Hidden,    T>> for Cons<Hidden, T2> where T: NotEqFields<T2> {}
+impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<Hidden>, T2> {}
+impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<Hidden>, T2> {}
+impl<   T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<Hidden>, T2> where T: NotEqFields<T2> {}
 
-impl<H, T, T2> NotEqFields<Cons<Hidden,    T>> for Cons<&'_ mut H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ mut H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ mut H, T2> where T: NotEqFields<T2> {}
+impl<H, T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<&'_ mut H>, T2> {}
+impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<&'_ mut H>, T2> {}
+impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<&'_ mut H>, T2> where T: NotEqFields<T2> {}
 
-impl<H, T, T2> NotEqFields<Cons<Hidden,    T>> for Cons<&'_ H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ H, T2> where T: NotEqFields<T2> {}
-
+impl<H, T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<&'_ H>, T2> {}
+impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<&'_ H>, T2> {}
+impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<&'_ H>, T2> where T: NotEqFields<T2> {}
 
 // ====================
 // === UsageTracker ===
@@ -1472,6 +1475,18 @@ impl<T> DerefMut for Field<T> {
     }
 }
 
+impl<T> IntoIterator for Field<T>
+where T: IntoIterator {
+    type Item = <T as IntoIterator>::Item;
+    type IntoIter = <T as IntoIterator>::IntoIter;
+    #[inline(always)]
+    fn into_iter(self) -> Self::IntoIter {
+        #[cfg(usage_tracking_enabled)]
+        self.usage_tracker.mark_as_used();
+        self.value_no_usage_tracking.into_iter()
+    }
+}
+
 // === Clone ===
 
 // pub struct FieldCloneMarker;
@@ -1581,7 +1596,7 @@ pub struct ExplicitParams<Args, T> {
 
 impl<Args, T> ExplicitParams<Args, T> {
     #[inline(always)]
-    fn new(value: T) -> Self {
+    pub fn new(value: T) -> Self {
         Self { value, phantom_data: PhantomData }
     }
 }
@@ -1616,17 +1631,6 @@ where T: HasField<Field> {
     #[inline(always)]
     fn take_field(self) -> Self::Type {
         self.value.take_field()
-    }
-}
-
-impl<Args, T: HasUsageTrackedFields> HasUsageTrackedFields for ExplicitParams<Args, T> {
-    #[inline(always)]
-    fn mark_all_fields_as_used(&self) {
-        self.value.mark_all_fields_as_used();
-    }
-    #[inline(always)]
-    fn disable_field_usage_tracking_shallow(&self) {
-        self.value.disable_field_usage_tracking_shallow();
     }
 }
 
@@ -1792,7 +1796,7 @@ macro_rules! partial {
     (@3 $glt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::partial! { @3 $glt $n $fs [$($ps)* $p]  $($ts)* } };
 
     // Production
-    (@4 $glt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial! { @5 $glt $n $fs [$($ps)*] FieldsAsHidden<$n<$($ps)*>> } };
+    (@4 $glt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial! { @5 $glt $n $fs [$($ps)*] $crate::FieldsAsHidden<$n<$($ps)*>> } };
 
     (@5 $glt:tt $n:ident [, $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
         $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $($ts)* }
@@ -1840,7 +1844,7 @@ pub trait PartialHelper<'s> {
     #[track_caller]
     #[inline(always)]
     fn partial_borrow<Target>(&'s mut self) -> Target
-    where Self: Partial<'s, Target> {//+ NotEq<Target> { // FIXME
+    where Self: Partial<'s, Target> + NotEq<Target> {
         self.partial_borrow_or_eq()
     }
 }

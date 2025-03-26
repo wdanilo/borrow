@@ -1,52 +1,52 @@
-// #![allow(dead_code)]
-//
-// use std::vec::Vec;
-// use borrow::partial as p;
-// use borrow::traits::*;
-//
-//
-// // ============
-// // === Data ===
-// // ============
-//
-// type NodeId = usize;
-// type EdgeId = usize;
-//
-// #[derive(Debug)]
-// struct Node {
-//     outputs: Vec<EdgeId>,
-//     inputs: Vec<EdgeId>,
-// }
-//
-// #[derive(Debug)]
-// struct Edge {
-//     from: Option<NodeId>,
-//     to: Option<NodeId>,
-// }
-//
-// #[derive(Debug)]
-// struct Group {
-//     nodes: Vec<NodeId>,
-// }
-//
-//
-// // =============
-// // === Graph ===
-// // =============
-//
-// #[derive(Debug, borrow::Partial)]
-// #[module(crate)]
-// struct Graph {
-//     nodes: Vec<Node>,
-//     edges: Vec<Edge>,
-//     groups: Vec<Group>,
-// }
-//
-//
-// // =============
-// // === Utils ===
-// // =============
-//
+#![allow(dead_code)]
+
+use std::vec::Vec;
+use borrow::partial as p;
+use borrow::traits::*;
+
+
+// ============
+// === Data ===
+// ============
+
+type NodeId = usize;
+type EdgeId = usize;
+
+#[derive(Debug)]
+struct Node {
+    outputs: Vec<EdgeId>,
+    inputs: Vec<EdgeId>,
+}
+
+#[derive(Debug)]
+struct Edge {
+    from: Option<NodeId>,
+    to: Option<NodeId>,
+}
+
+#[derive(Debug)]
+struct Group {
+    nodes: Vec<NodeId>,
+}
+
+
+// =============
+// === Graph ===
+// =============
+
+#[derive(Debug, borrow::Partial)]
+#[module(crate)]
+struct Graph {
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+    groups: Vec<Group>,
+}
+
+
+// =============
+// === Utils ===
+// =============
+
 // impl p!(<mut *> Graph) {
 //     fn detach_all_nodes(&mut self) {
 //         let (nodes, self2) = self.extract_nodes();

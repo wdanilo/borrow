@@ -283,7 +283,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             impl<#params #(#fields_param,)*>
             borrow::AsRefWithFields<borrow::HList![#(#fields_param,)*]>
             for #ident<#params>
-            where T: Debug {
+            where #bounds {
                 type Output = #ref_ident<#ident<#params>, #(#fields_param,)*>;
             }
         }
@@ -599,18 +599,16 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //         Self,
     //         borrow::RefWithFields<Ctx<'t, T>, borrow::FieldsAsMut<'_, Ctx<'t, T>>>
     //     > {
-    //         let out = borrow::ExplicitParams::new(
-    //             CtxRef {
-    //                 version:  borrow::Field::new("version", &mut self.version),
-    //                 geometry: borrow::Field::new("geometry", &mut self.geometry),
-    //                 material: borrow::Field::new("material", &mut self.material),
-    //                 mesh:     borrow::Field::new("mesh", &mut self.mesh),
-    //                 scene:    borrow::Field::new("scene", &mut self.scene),
-    //                 marker: borrow::PhantomData,
-    //             }
-    //         );
-    //         borrow::HasUsageTrackedFields::disable_field_usage_tracking_shallow(&out);
-    //         out
+    //         let struct_ref = CtxRef {
+    //             version:  borrow::Field::new("version", &mut self.version),
+    //             geometry: borrow::Field::new("geometry", &mut self.geometry),
+    //             material: borrow::Field::new("material", &mut self.material),
+    //             mesh:     borrow::Field::new("mesh", &mut self.mesh),
+    //             scene:    borrow::Field::new("scene", &mut self.scene),
+    //             marker:   std::marker::PhantomData,
+    //         };
+    //         borrow::HasUsageTrackedFields::disable_field_usage_tracking_shallow(&struct_ref);
+    //         borrow::ExplicitParams::new(struct_ref)
     //     }
     // }
     // ```
@@ -623,19 +621,17 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 Self,
                 borrow::RefWithFields<#ident<#params>, borrow::FieldsAsMut<'_, #ident<#params>>>
             > {
-                let out = borrow::ExplicitParams::new(
-                    #ref_ident {
-                        #(
-                            #fields_ident: borrow::Field::new(
-                                stringify!(#fields_ident),
-                                &mut self.#fields_ident
-                            ),
-                        )*
-                        marker: borrow::PhantomData,
-                    }
-                );
-                borrow::HasUsageTrackedFields::disable_field_usage_tracking_shallow(&out);
-                out
+                let struct_ref = #ref_ident {
+                    #(
+                        #fields_ident: borrow::Field::new(
+                            stringify!(#fields_ident),
+                            &mut self.#fields_ident
+                        ),
+                    )*
+                    marker: std::marker::PhantomData,
+                };
+                borrow::HasUsageTrackedFields::disable_field_usage_tracking_shallow(&struct_ref);
+                borrow::ExplicitParams::new(struct_ref)
             }
         }
     });
