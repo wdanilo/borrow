@@ -1277,6 +1277,7 @@ pub mod traits {
     pub use super::Partial as _;
     pub use super::PartialHelper as _;
     pub use super::SplitHelper as _;
+    pub use super::AsRefsMut as _;
 }
 
 // ===============
@@ -1514,90 +1515,44 @@ where T: IntoIterator {
 
 pub trait CloneMut<'s> {
     type Cloned;
-    fn clone_mut(this: &'s mut Self) -> Self::Cloned;
+    fn clone_mut(&'s mut self) -> Self::Cloned;
 }
 
-impl<'s> CloneMut<'s> for Field<Hidden> {
-    type Cloned = Field<Hidden>;
-    fn clone_mut(this: &'s mut Self) -> Self::Cloned {
-        let usage_tracker = this.usage_tracker.clone();
-        this.usage_tracker.disable();
-        Field::cons(this.value_no_usage_tracking, usage_tracker)
+pub type Cloned<'s, T> = <T as CloneMut<'s>>::Cloned;
+
+pub trait FieldClone<'s> {
+    type Cloned;
+    fn field_clone(&'s mut self) -> Field<Self::Cloned>;
+}
+
+pub type FieldCloned<'s, T> = <T as FieldClone<'s>>::Cloned;
+
+impl<'s> FieldClone<'s> for Field<Hidden> {
+    type Cloned = Hidden;
+    fn field_clone(&'s mut self) -> Field<Self::Cloned> {
+        let usage_tracker = self.usage_tracker.clone();
+        self.usage_tracker.disable();
+        Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
 }
 
-impl<'s, 't, T> CloneMut<'s> for Field<&'t T> {
-    type Cloned = Field<&'t T>;
-    fn clone_mut(this: &'s mut Self) -> Self {
-        let usage_tracker = this.usage_tracker.clone();
-        this.usage_tracker.disable();
-        Field::cons(this.value_no_usage_tracking, usage_tracker)
+impl<'s, 't, T> FieldClone<'s> for Field<&'t T> {
+    type Cloned = &'t T;
+    fn field_clone(&'s mut self) -> Field<Self::Cloned> {
+        let usage_tracker = self.usage_tracker.clone();
+        self.usage_tracker.disable();
+        Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
 }
 
-impl<'s, 't, T: 's> CloneMut<'s> for Field<&'t mut T> {
-    type Cloned = Field<&'s mut T>;
-    fn clone_mut(this: &'s mut Self) -> Self::Cloned {
-        let usage_tracker = this.usage_tracker.clone();
-        this.usage_tracker.disable();
-        Field::cons(this.value_no_usage_tracking, usage_tracker)
+impl<'s, 't, T: 's> FieldClone<'s> for Field<&'t mut T> {
+    type Cloned = &'s mut T;
+    fn field_clone(&'s mut self) -> Field<Self::Cloned> {
+        let usage_tracker = self.usage_tracker.clone();
+        self.usage_tracker.disable();
+        Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
 }
-
-// pub struct FieldCloneMarker;
-//
-// pub trait FieldClone<'s, This> {
-//     type Cloned;
-//     fn clone(this: &'s mut Field<This>) -> Field<Self::Cloned>;
-// }
-//
-// impl<'s> FieldClone<'s, Hidden> for FieldCloneMarker {
-//     type Cloned = Hidden;
-//     #[track_caller]
-//     #[inline(always)]
-//     #[cfg(usage_tracking_enabled)]
-//     fn clone(this: &'s mut Field<Hidden>) -> Field<Self::Cloned> {
-//         Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone())
-//     }
-//     #[track_caller]
-//     #[inline(always)]
-//     #[cfg(not(usage_tracking_enabled))]
-//     fn clone(this: &'s mut Field<Hidden>) -> Field<Self::Cloned> {
-//         Field::cons(this.value_no_usage_tracking)
-//     }
-// }
-//
-// impl<'s, 't, T> FieldClone<'s, &'t T> for FieldCloneMarker {
-//     type Cloned = &'t T;
-//     #[track_caller]
-//     #[inline(always)]
-//     #[cfg(usage_tracking_enabled)]
-//     fn clone(this: &'s mut Field<&'t T>) -> Field<Self::Cloned> {
-//         Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone())
-//     }
-//     #[track_caller]
-//     #[inline(always)]
-//     #[cfg(not(usage_tracking_enabled))]
-//     fn clone(this: &'s mut Field<&'t T>) -> Field<Self::Cloned> {
-//         Field::cons(this.value_no_usage_tracking)
-//     }
-// }
-//
-// impl<'s, 't, T: 's> FieldClone<'s, &'t mut T> for FieldCloneMarker {
-//     type Cloned = &'s mut T;
-//     #[track_caller]
-//     #[inline(always)]
-//     #[cfg(usage_tracking_enabled)]
-//     fn clone(this: &'s mut Field<&'t mut T>) -> Field<Self::Cloned> {
-//         Field::cons(this.value_no_usage_tracking, this.usage_tracker.clone())
-//     }
-//     #[track_caller]
-//     #[inline(always)]
-//     #[cfg(not(usage_tracking_enabled))]
-//     fn clone(this: &'s mut Field<&'t mut T>) -> Field<Self::Cloned> {
-//         Field::cons(this.value_no_usage_tracking)
-//     }
-// }
 
 // ====================
 // === HasFieldsExt ===
@@ -1700,15 +1655,28 @@ where T: HasField<Field> {
 //     }
 // }
 
-impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T>
-where T: Partial<'x, ExplicitParams<S, T2>> {
-    type Rest = <T as Partial<'x, ExplicitParams<S, T2>>>::Rest;
+// impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T>
+// where T: Partial<'x, ExplicitParams<S, T2>> {
+//     type Rest = <T as Partial<'x, ExplicitParams<S, T2>>>::Rest;
+//     #[track_caller]
+//     #[inline(always)]
+//     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
+//         self.value.split_impl()
+//     }
+// }
+
+impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T> where
+    Self: CloneMut<'x>,
+    Cloned<'x, Self>: IntoPartial<ExplicitParams<S, T2>>
+{
+    type Rest = <Cloned<'x, Self> as IntoPartial<ExplicitParams<S, T2>>>::Rest;
     #[track_caller]
     #[inline(always)]
     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
-        self.value.split_impl()
+        self.clone_mut().into_split_impl()
     }
 }
+
 
 impl<'x, S, T, T2> IntoPartial<ExplicitParams<S, T2>> for ExplicitParams<S, T>
 where T: IntoPartial<ExplicitParams<S, T2>> {
@@ -2047,7 +2015,7 @@ extern crate self as borrow;
 mod sandbox {
 
     use std::fmt::Debug;
-    use super::IntoPartial;
+    use super::{ExplicitParams, IntoPartial};
 
     pub struct GeometryCtx {}
     pub struct MaterialCtx {}
@@ -2074,6 +2042,44 @@ mod sandbox {
             self.as_refs_mut().into_split_impl()
         }
     }
+
+    impl<'s, Args, T> borrow::CloneMut<'s> for ExplicitParams<Args, T>
+    where T: borrow::CloneMut<'s> {
+        type Cloned = ExplicitParams<Args, borrow::Cloned<'s, T>>;
+        fn clone_mut(&'s mut self) -> Self::Cloned {
+            ExplicitParams::new(self.value.clone_mut())
+        }
+    }
+
+    // impl<'s, __S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::CloneMut<'s>
+    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // where
+    //     borrow::Field<__Version>: borrow::FieldClone<'s>,
+    //     borrow::Field<__Geometry>: borrow::FieldClone<'s>,
+    //     borrow::Field<__Material>: borrow::FieldClone<'s>,
+    //     borrow::Field<__Mesh>: borrow::FieldClone<'s>,
+    //     borrow::Field<__Scene>: borrow::FieldClone<'s>,
+    // {
+    //     type Cloned = CtxRef<
+    //         __S__,
+    //         borrow::FieldCloned<'s, borrow::Field<__Version>>,
+    //         borrow::FieldCloned<'s, borrow::Field<__Geometry>>,
+    //         borrow::FieldCloned<'s, borrow::Field<__Material>>,
+    //         borrow::FieldCloned<'s, borrow::Field<__Mesh>>,
+    //         borrow::FieldCloned<'s, borrow::Field<__Scene>>
+    //     >;
+    //     fn clone_mut(&'s mut self) -> Self::Cloned {
+    //         use borrow::FieldClone;
+    //         CtxRef {
+    //             version: self.version.field_clone(),
+    //             geometry: self.geometry.field_clone(),
+    //             material: self.material.field_clone(),
+    //             mesh: self.mesh.field_clone(),
+    //             scene: self.scene.field_clone(),
+    //             marker: std::marker::PhantomData,
+    //         }
+    //     }
+    // }
 }
 
 
@@ -2097,12 +2103,21 @@ pub fn test() {
     // test2(&mut ctx_ref_mut.partial_borrow_or_eq());
     test2(&mut ctx_ref_mut);
 
+
+    // pub trait CloneMut<'s> {
+    //     type Cloned;
+    //     fn clone_mut(this: &'s mut Self) -> Self::Cloned;
+    // }
+    // type Cloned<'s, T> = <T as CloneMut<'s>>::Cloned;
+
+
+
 }
 
 fn test2<'s, 't>(ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
     {
-        let _y = ctx.extract_geometry();
-        let _y = ctx.extract_version();
+        // let _y = ctx.extract_geometry();
+        // let _y = ctx.extract_version();
     }
     {
         // let _x = ctx.split::<p!(&<'_ mut geometry>Ctx<'s, usize>)>();

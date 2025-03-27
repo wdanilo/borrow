@@ -268,7 +268,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //     pub material: borrow::Field<__Material>,
     //     pub mesh: borrow::Field<__Mesh>,
     //     pub scene: borrow::Field<__Scene>,
-    //     marker: std::marker::PhantomData<__S__>
+    //     pub marker: std::marker::PhantomData<__S__>
     // }
     // ```
     let ref_struct_def = {
@@ -300,6 +300,59 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             for #ident<#params>
             where #bounds {
                 type Output = #ref_ident<#ident<#params>, #(#fields_param,)*>;
+            }
+        }
+    );
+
+    // Generates:
+    //
+    // impl<'__s__, __S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::CloneMut<'__s__>
+    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // where
+    //     borrow::Field<__Version>: borrow::FieldClone<'__s__>,
+    //     borrow::Field<__Geometry>: borrow::FieldClone<'__s__>,
+    //     borrow::Field<__Material>: borrow::FieldClone<'__s__>,
+    //     borrow::Field<__Mesh>: borrow::FieldClone<'__s__>,
+    //     borrow::Field<__Scene>: borrow::FieldClone<'__s__>,
+    // {
+    //     type Cloned = CtxRef<
+    //         __S__,
+    //         borrow::FieldCloned<'__s__, borrow::Field<__Version>>,
+    //         borrow::FieldCloned<'__s__, borrow::Field<__Geometry>>,
+    //         borrow::FieldCloned<'__s__, borrow::Field<__Material>>,
+    //         borrow::FieldCloned<'__s__, borrow::Field<__Mesh>>,
+    //         borrow::FieldCloned<'__s__, borrow::Field<__Scene>>
+    //     >;
+    //     fn clone_mut(&'__s__ mut self) -> Self::Cloned {
+    //         use borrow::FieldClone;
+    //         CtxRef {
+    //             version: self.version.field_clone(),
+    //             geometry: self.geometry.field_clone(),
+    //             material: self.material.field_clone(),
+    //             mesh: self.mesh.field_clone(),
+    //             scene: self.scene.field_clone(),
+    //             marker: std::marker::PhantomData,
+    //         }
+    //     }
+    // }
+    out.push(
+        quote! {
+            impl<'__s__, __S__, #(#fields_param,)*> borrow::CloneMut<'__s__>
+            for #ref_ident<__S__, #(#fields_param,)*>
+            where
+                #(borrow::Field<#fields_param>: borrow::FieldClone<'__s__>,)*
+            {
+                type Cloned = #ref_ident<
+                    __S__,
+                    #(borrow::FieldCloned<'__s__, borrow::Field<#fields_param>>,)*
+                >;
+                fn clone_mut(&'__s__ mut self) -> Self::Cloned {
+                    use borrow::FieldClone;
+                    #ref_ident {
+                        #(#fields_ident: self.#fields_ident.field_clone(),)*
+                        marker: std::marker::PhantomData,
+                    }
+                }
             }
         }
     );
@@ -372,70 +425,70 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //     }
     // }
     // ```
-    out.push({
-        let field_params_target = fields_param.iter().map(|i| {
-            Ident::new(&format!("{i}{}", internal("Target")), i.span())
-        }).collect_vec();
-
-        let field_params_rest = fields_param.iter().map(|i| {
-            Ident::new(&format!("{i}{}", internal("Rest")), i.span())
-        }).collect_vec();
-
-        let fields_rest_ident = fields_ident.iter().map(|i|
-            Ident::new(&format!("{}{}", internal(&i.to_string()), internal("rest")), i.span())
-        ).collect_vec();
-
-        quote! {
-            #[allow(non_camel_case_types)]
-            #[allow(non_snake_case)]
-            impl<'__a__, __S__,
-                #(#fields_param,)*
-                #(#field_params_target,)*
-                #(#field_params_rest,)*
-            >
-            borrow::Partial<'__a__, borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_target,)*>>>
-            for #ref_ident<__S__, #(#fields_param,)*>
-            where
-                #(
-                    borrow::AcquireMarker: borrow::Acquire<
-                        '__a__,
-                        #fields_param,
-                        #field_params_target,
-                        Rest=#field_params_rest
-                    >,
-                )*
-            {
-                type Rest = borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_rest,)*>>;
-
-                #[track_caller]
-                #[inline(always)]
-                fn split_impl(
-                    &'__a__ mut self
-                ) -> (
-                    borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_target,)*>>,
-                    Self::Rest
-                ) {
-                    use borrow::Acquire;
-                    #(let (#fields_ident, #fields_rest_ident) =
-                        borrow::AcquireMarker::acquire(&mut self.#fields_ident);)*
-                    (
-                        borrow::ExplicitParams::new(
-                            #ref_ident {
-                                #(#fields_ident,)*
-                                marker: std::marker::PhantomData
-                            }
-                        ),
-                        borrow::ExplicitParams::new(
-                            #ref_ident {
-                                #(#fields_ident: #fields_rest_ident,)*
-                                marker: std::marker::PhantomData
-                            }
-                        )
-                    )
-                }
-            }
-        }
-    });
+    // out.push({
+    //     let field_params_target = fields_param.iter().map(|i| {
+    //         Ident::new(&format!("{i}{}", internal("Target")), i.span())
+    //     }).collect_vec();
+    //
+    //     let field_params_rest = fields_param.iter().map(|i| {
+    //         Ident::new(&format!("{i}{}", internal("Rest")), i.span())
+    //     }).collect_vec();
+    //
+    //     let fields_rest_ident = fields_ident.iter().map(|i|
+    //         Ident::new(&format!("{}{}", internal(&i.to_string()), internal("rest")), i.span())
+    //     ).collect_vec();
+    //
+    //     quote! {
+    //         #[allow(non_camel_case_types)]
+    //         #[allow(non_snake_case)]
+    //         impl<'__a__, __S__,
+    //             #(#fields_param,)*
+    //             #(#field_params_target,)*
+    //             #(#field_params_rest,)*
+    //         >
+    //         borrow::Partial<'__a__, borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_target,)*>>>
+    //         for #ref_ident<__S__, #(#fields_param,)*>
+    //         where
+    //             #(
+    //                 borrow::AcquireMarker: borrow::Acquire<
+    //                     '__a__,
+    //                     #fields_param,
+    //                     #field_params_target,
+    //                     Rest=#field_params_rest
+    //                 >,
+    //             )*
+    //         {
+    //             type Rest = borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_rest,)*>>;
+    //
+    //             #[track_caller]
+    //             #[inline(always)]
+    //             fn split_impl(
+    //                 &'__a__ mut self
+    //             ) -> (
+    //                 borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_target,)*>>,
+    //                 Self::Rest
+    //             ) {
+    //                 use borrow::Acquire;
+    //                 #(let (#fields_ident, #fields_rest_ident) =
+    //                     borrow::AcquireMarker::acquire(&mut self.#fields_ident);)*
+    //                 (
+    //                     borrow::ExplicitParams::new(
+    //                         #ref_ident {
+    //                             #(#fields_ident,)*
+    //                             marker: std::marker::PhantomData
+    //                         }
+    //                     ),
+    //                     borrow::ExplicitParams::new(
+    //                         #ref_ident {
+    //                             #(#fields_ident: #fields_rest_ident,)*
+    //                             marker: std::marker::PhantomData
+    //                         }
+    //                     )
+    //                 )
+    //             }
+    //         }
+    //     }
+    // });
 
     out.push({
         let field_params_target = fields_param.iter().map(|i| {
@@ -554,8 +607,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // where
     //     T: Debug,
     //     (GeometryCtx): '__tgt,
-    //     Self: borrow::Partial<
-    //         '__s,
+    //     Self: borrow::CloneMut<'__s>,
+    //     borrow::Cloned<'__s, Self>: borrow::IntoPartial<
     //         borrow::ExplicitParams<
     //             Ctx<'t, T>,
     //             CtxRef<
@@ -574,8 +627,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //     pub fn extract_geometry(&'__s mut self) -> (
     //         borrow::Field<&'__tgt mut GeometryCtx>,
     //
-    //             <Self as borrow::Partial<
-    //                 '__s,
+    //             <borrow::Cloned<'__s, Self> as borrow::IntoPartial<
     //                 borrow::ExplicitParams<
     //                     Ctx<'t, T>,
     //                     CtxRef<
@@ -589,8 +641,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //                 >
     //             >>::Rest
     //     ) {
-    //         let split = borrow::SplitHelper::split(self);
-    //         (split.0.geometry, borrow::ExplicitParams::new(split.1))
+    //         let split = borrow::IntoPartial::into_split_impl(borrow::CloneMut::clone_mut(self));
+    //         (split.0.value.#field_ident, split.1)
     //     }
     // }
     // ```
@@ -618,8 +670,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             where
                 #bounds
                 #field_ty: '__tgt,
-                Self: borrow::Partial<
-                    '__s,
+                Self: borrow::CloneMut<'__s>,
+                borrow::Cloned<'__s, Self>: borrow::IntoPartial<
                     borrow::ExplicitParams<
                         #ident<#params>,
                         #ref_ident<
@@ -633,9 +685,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 #[inline(always)]
                 pub fn #fn_ident(&'__s mut self) -> (
                     borrow::Field<#field_ref_mut>,
-
-                        <Self as borrow::Partial<
-                            '__s,
+                        <borrow::Cloned<'__s, Self> as borrow::IntoPartial<
                             borrow::ExplicitParams<
                                 #ident<#params>,
                                 #ref_ident<
@@ -645,7 +695,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                             >
                         >>::Rest
                 ) {
-                    let split = borrow::SplitHelper::split(self);
+                    let split = borrow::IntoPartial::into_split_impl(borrow::CloneMut::clone_mut(self));
                     (split.0.value.#field_ident, split.1)
                 }
             }
