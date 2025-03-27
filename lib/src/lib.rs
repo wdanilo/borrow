@@ -1387,6 +1387,12 @@ impl UsageTracker {
     }
 }
 
+impl Clone for UsageTracker {
+    fn clone(&self) -> Self {
+        Self::new(self.label, self.used.clone(), self.parent.clone(), self.disabled.clone())
+    }
+}
+
 // =============================
 // === HasUsageTrackedFields ===
 // =============================
@@ -1505,6 +1511,38 @@ where T: IntoIterator {
 }
 
 // === Clone ===
+
+pub trait CloneMut<'s> {
+    type Cloned;
+    fn clone_mut(this: &'s mut Self) -> Self::Cloned;
+}
+
+impl<'s> CloneMut<'s> for Field<Hidden> {
+    type Cloned = Field<Hidden>;
+    fn clone_mut(this: &'s mut Self) -> Self::Cloned {
+        let usage_tracker = this.usage_tracker.clone();
+        this.usage_tracker.disable();
+        Field::cons(this.value_no_usage_tracking, usage_tracker)
+    }
+}
+
+impl<'s, 't, T> CloneMut<'s> for Field<&'t T> {
+    type Cloned = Field<&'t T>;
+    fn clone_mut(this: &'s mut Self) -> Self {
+        let usage_tracker = this.usage_tracker.clone();
+        this.usage_tracker.disable();
+        Field::cons(this.value_no_usage_tracking, usage_tracker)
+    }
+}
+
+impl<'s, 't, T: 's> CloneMut<'s> for Field<&'t mut T> {
+    type Cloned = Field<&'s mut T>;
+    fn clone_mut(this: &'s mut Self) -> Self::Cloned {
+        let usage_tracker = this.usage_tracker.clone();
+        this.usage_tracker.disable();
+        Field::cons(this.value_no_usage_tracking, usage_tracker)
+    }
+}
 
 // pub struct FieldCloneMarker;
 //
