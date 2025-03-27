@@ -45,7 +45,7 @@ struct Graph {
 // =============
 
 // Requires mutable access to the `graph.edges` field.
-fn detach_node(mut graph: p!(&<mut edges> Graph), node: &mut Node) {
+fn detach_node(graph: p!(&<mut edges> Graph), node: &mut Node) {
     for edge_id in std::mem::take(&mut node.outputs) {
         graph.edges[edge_id].from = None;
     }
@@ -55,12 +55,12 @@ fn detach_node(mut graph: p!(&<mut edges> Graph), node: &mut Node) {
 }
 
 // Requires mutable access to all `graph` fields.
-fn detach_all_nodes(mut graph: p!(&<mut *> Graph)) {
+fn detach_all_nodes(graph: p!(&<mut *> Graph)) {
     // Extract the `nodes` field.
     // The `graph2` variable has a type of `p!(&<mut *, !nodes> Graph)`.
-    let (mut nodes, mut graph2) = graph.extract_nodes();
+    let (nodes, mut graph2) = graph.extract_nodes();
     for node in nodes {
-        detach_node(graph2.partial_borrow(), node);
+        detach_node(p!(&mut graph2), node);
     }
 }
 
@@ -86,7 +86,7 @@ fn test() {
         groups: vec![]
     };
 
-    detach_all_nodes(graph.as_refs_mut());
+    detach_all_nodes(&mut graph.as_refs_mut());
 
     for node in &graph.nodes {
         assert!(node.outputs.is_empty());

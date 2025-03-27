@@ -61,7 +61,7 @@
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
 //!
-//! ```ignore
+//! ```
 //! use std::vec::Vec;
 //!
 //! // ============
@@ -92,7 +92,7 @@
 //!
 //! </details>
 //!
-//! ```ignore
+//! ```
 //! # use std::vec::Vec;
 //! #
 //! # type NodeId = usize;
@@ -125,7 +125,7 @@
 //!
 //! The most important code that this macro generates is:
 //!
-//! ```ignore
+//! ```
 //! # pub struct Graph {
 //! #     pub nodes: Vec<Node>,
 //! #     pub edges: Vec<Edge>,
@@ -136,31 +136,41 @@
 //! # pub struct Group;
 //! #
 //! pub struct GraphRef<Nodes, Edges, Groups> {
-//!     pub nodes:  Nodes,
-//!     pub edges:  Edges,
-//!     pub groups: Groups,
+//!     pub nodes:  borrow::Field<Nodes>,
+//!     pub edges:  borrow::Field<Edges>,
+//!     pub groups: borrow::Field<Groups>,
 //! }
 //!
 //! impl Graph {
 //!     pub fn as_refs_mut(&mut self) ->
-//!         GraphRef<
-//!             &mut Vec<Node>,
-//!             &mut Vec<Edge>,
-//!             &mut Vec<Group>,
+//!         borrow::ExplicitParams<
+//!             Graph,
+//!             GraphRef<
+//!                 &mut Vec<Node>,
+//!                 &mut Vec<Edge>,
+//!                 &mut Vec<Group>,
+//!             >
 //!         >
 //!     {
-//!         GraphRef {
-//!             nodes:  &mut self.nodes,
-//!             edges:  &mut self.edges,
-//!             groups: &mut self.groups
-//!         }
+//!         borrow::ExplicitParams::new(
+//!             GraphRef {
+//!                 nodes:  borrow::Field::new("nodes",  &mut self.nodes),
+//!                 edges:  borrow::Field::new("edges",  &mut self.edges),
+//!                 groups: borrow::Field::new("groups", &mut self.groups)
+//!             }
+//!         )
 //!     }
 //! }
 //! ```
 //!
-//! All partial borrows of the `Graph` struct will be represented as `&mut GraphRef<...>` with type
-//! parameters instantiated to one of `&T`, `&mut T`, or `Hidden<T>`, a marker for fields
-//! inaccessible in the current borrow.
+//! All partial borrows of the `Graph` struct will be represented as
+//! `borrow::ExplicitParams<Graph, GraphRef<...>>` with type parameters instantiated to one of `&T`,
+//! `&mut T`, or `Hidden`, a marker for fields inaccessible in the current borrow.
+//!
+//! Please note, that `borrow::ExplicitParams` is a zero-overhead wrapper used to guide the Rust
+//! type inferencer. The `borrow::Field` struct is zero-overhead when compiled with optimizations,
+//! and is used to provide diagnostics about unused borrowed fields, which is described later in
+//! this doc.
 //!
 //! <sub></sub>
 //!
@@ -1264,7 +1274,9 @@ use std::sync::Arc;
 use hlist::Cons;
 
 pub mod traits {
-    pub use super::PartialHelper;
+    pub use super::Partial as _;
+    pub use super::PartialHelper as _;
+    pub use super::SplitHelper as _;
 }
 
 // ===============
@@ -1286,7 +1298,12 @@ macro_rules! error {
 // =============
 
 pub trait NotEq<Target> {}
-impl<Source, Target> NotEq<Target> for Source where
+
+impl<Args, Args2, T, T2> NotEq<ExplicitParams<Args2, T2>> for ExplicitParams<Args, T> where
+    ExplicitParams<Args, T>: NotEqHelper<ExplicitParams<Args2, T2>> {}
+
+pub trait NotEqHelper<Target> {}
+impl<Source, Target> NotEqHelper<Target> for Source where
     Source: HasFields,
     Target: HasFields,
     Fields<Source>: NotEqFields<Fields<Target>> {}
@@ -1590,7 +1607,7 @@ pub type RefWithFields<T, F> = <T as AsRefWithFields<F>>::Output;
 
 #[repr(transparent)]
 pub struct ExplicitParams<Args, T> {
-    value: T,
+    pub value: T,
     phantom_data: PhantomData<Args>
 }
 
@@ -1634,14 +1651,34 @@ where T: HasField<Field> {
     }
 }
 
+// impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T>
+// where T: Partial<'x, T2> {
+//     type Rest = ExplicitParams<S, <T as Partial<'x, T2>>::Rest>;
+//     #[track_caller]
+//     #[inline(always)]
+//     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
+//         let (value, rest) = self.value.split_impl();
+//         (ExplicitParams::new(value), ExplicitParams::new(rest))
+//     }
+// }
+
 impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T>
-where T: Partial<'x, T2> {
-    type Rest = ExplicitParams<S, <T as Partial<'x, T2>>::Rest>;
+where T: Partial<'x, ExplicitParams<S, T2>> {
+    type Rest = <T as Partial<'x, ExplicitParams<S, T2>>>::Rest;
     #[track_caller]
     #[inline(always)]
     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
-        let (value, rest) = self.value.split_impl();
-        (ExplicitParams::new(value), ExplicitParams::new(rest))
+        self.value.split_impl()
+    }
+}
+
+impl<'x, S, T, T2> IntoPartial<ExplicitParams<S, T2>> for ExplicitParams<S, T>
+where T: IntoPartial<ExplicitParams<S, T2>> {
+    type Rest = <T as IntoPartial<ExplicitParams<S, T2>>>::Rest;
+    #[track_caller]
+    #[inline(always)]
+    fn into_split_impl(mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
+        self.value.into_split_impl()
     }
 }
 
@@ -1664,18 +1701,10 @@ pub trait Acquire<'s, This, Target> {
     fn acquire(this: &'s mut Field<This>) -> (Field<Target>, Field<Self::Rest>);
 }
 
-// impl<'s, T> Acquire<'s, T, Hidden> for AcquireMarker
-// where FieldCloneMarker: FieldClone<'s, T> {
-//     type Rest = <FieldCloneMarker as FieldClone<'s, T>>::Cloned;
-//     #[track_caller]
-//     #[inline(always)]
-//     fn acquire(this: &'s mut Field<T>) -> (Field<Hidden>, Field<Self::Rest>) {
-//         (
-//             this.clone_as_hidden(),
-//             FieldCloneMarker::clone(this)
-//         )
-//     }
-// }
+pub trait IntoAcquire<This, Target> {
+    type Rest;
+    fn into_acquire(this: Field<This>) -> (Field<Target>, Field<Self::Rest>);
+}
 
 impl<'s, 't, T> Acquire<'s, &'t mut T, Hidden> for AcquireMarker
 where T: 's {
@@ -1683,6 +1712,18 @@ where T: 's {
     #[track_caller]
     #[inline(always)]
     fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
+        )
+    }
+}
+
+impl<'t, T> IntoAcquire<&'t mut T, Hidden> for AcquireMarker {
+    type Rest = &'t mut T;
+    #[track_caller]
+    #[inline(always)]
+    fn into_acquire(this: Field<&'t mut T>) -> (Field<Hidden>, Field<Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
@@ -1702,11 +1743,35 @@ impl<'s, 't, T> Acquire<'s, &'t T, Hidden> for AcquireMarker {
     }
 }
 
+impl<'t, T> IntoAcquire<&'t T, Hidden> for AcquireMarker {
+    type Rest = &'t T;
+    #[track_caller]
+    #[inline(always)]
+    fn into_acquire(this: Field<&'t T>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
+        )
+    }
+}
+
 impl<'s> Acquire<'s, Hidden, Hidden> for AcquireMarker {
     type Rest = Hidden;
     #[track_caller]
     #[inline(always)]
     fn acquire(this: &'s mut Field<Hidden>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
+        )
+    }
+}
+
+impl IntoAcquire<Hidden, Hidden> for AcquireMarker {
+    type Rest = Hidden;
+    #[track_caller]
+    #[inline(always)]
+    fn into_acquire(this: Field<Hidden>) -> (Field<Hidden>, Field<Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
@@ -1733,6 +1798,25 @@ where 's: 'y {
     }
 }
 
+impl<'t, 'y, T> IntoAcquire<&'t mut T, &'y mut T> for AcquireMarker
+where 't: 'y {
+    type Rest = Hidden;
+    #[track_caller]
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn into_acquire(this: Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
+        let rest = this.clone_as_hidden();
+        (Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()), rest)
+    }
+    #[track_caller]
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn into_acquire(this: Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
+        let rest = this.clone_as_hidden();
+        (Field::cons(this.value_no_usage_tracking), rest)
+    }
+}
+
 impl<'s, 't, 'y, T: 's> Acquire<'s, &'t mut T, &'y T> for AcquireMarker
 where 's: 'y {
     type Rest = &'s T;
@@ -1749,6 +1833,26 @@ where 's: 'y {
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
+        (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking))
+    }
+}
+
+impl<'t, 'y, T> IntoAcquire<&'t mut T, &'y T> for AcquireMarker
+where 't: 'y {
+    type Rest = &'t T;
+    #[track_caller]
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn into_acquire(this: Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
+        (
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
+        )
+    }
+    #[track_caller]
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn into_acquire(this: Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
         (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking))
     }
 }
@@ -1773,45 +1877,73 @@ where 't: 'y {
     }
 }
 
+impl<'t, 'y, T> IntoAcquire<&'t T, &'y T> for AcquireMarker
+where 't: 'y {
+    type Rest = &'t T;
+    #[track_caller]
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn into_acquire(this: Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
+        (
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
+        )
+    }
+    #[track_caller]
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn into_acquire(this: Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
+        (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking),)
+    }
+}
+
 // =============
 // === Macro ===
 // =============
 
 #[macro_export]
 macro_rules! partial {
+    (& $($lt:lifetime)? mut $expr:expr) => { & $($lt)? mut $expr.partial_borrow() };
+
     // & 'glt < fs... > Ctx < ps... >
     (& $glt:lifetime < $($ts:tt)*) => { $crate::partial! { @1 $glt [] $($ts)* } };
     (&               < $($ts:tt)*) => { $crate::partial! { @1 '_   [] $($ts)* } };
+    (                < $($ts:tt)*) => { $crate::partial! { @1 NONE [] $($ts)* } };
+
+    // 'def_lt, fs...> Ctx <...>
+    (@1 $glt:tt $fs:tt $def_lt:lifetime , $($ts:tt)*) => { $crate::partial! { @2 $glt $def_lt $fs $($ts)* } };
+    (@1 $glt:tt $fs:tt                        $($ts:tt)*) => { $crate::partial! { @2 $glt '_      $fs $($ts)* } };
 
     // fs ...> Ctx <...>
-    (@1 $glt:tt $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @2 $glt $n $fs          $($ts)* } };
-    (@1 $glt:tt [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::partial! { @1 $glt    [$($fs)* $f] $($ts)* } };
+    (@2 $glt:tt $def_lt:tt $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @3 $glt $def_lt $n $fs          $($ts)* } };
+    (@2 $glt:tt $def_lt:tt [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::partial! { @2 $glt $def_lt    [$($fs)* $f] $($ts)* } };
 
     // Ctx <...>
-    (@2 $glt:tt $n:ident $fs:tt)              => { $crate::partial! { @4 $glt $n $fs [] } };
-    (@2 $glt:tt $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @3 $glt $n $fs [] $($ts)* } };
+    (@3 $glt:tt $def_lt:tt $n:ident $fs:tt)              => { $crate::partial! { @5 $glt $def_lt $n $fs [] } };
+    (@3 $glt:tt $def_lt:tt $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @4 $glt $def_lt $n $fs [] $($ts)* } };
 
     // <...>
-    (@3 $glt:tt $n:ident $fs:tt $ps:tt >)                      => { $crate::partial! { @4 $glt $n $fs $ps                   } };
-    (@3 $glt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::partial! { @3 $glt $n $fs [$($ps)* $p]  $($ts)* } };
+    (@4 $glt:tt $def_lt:tt $n:ident $fs:tt $ps:tt >)                      => { $crate::partial! { @5 $glt $def_lt $n $fs $ps                   } };
+    (@4 $glt:tt $def_lt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::partial! { @4 $glt $def_lt $n $fs [$($ps)* $p]  $($ts)* } };
 
     // Production
-    (@4 $glt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial! { @5 $glt $n $fs [$($ps)*] $crate::FieldsAsHidden<$n<$($ps)*>> } };
+    (@5 $glt:tt $def_lt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial! { @6 $glt $def_lt $n $fs [$($ps)*] $crate::FieldsAsHidden<$n<$($ps)*>> } };
 
-    (@5 $glt:tt $n:ident [, $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
-        $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $($ts)* }
+    (@6 $glt:tt $def_lt:tt $n:ident [, $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
+        $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $($ts)* }
     };
 
-    (@5 $glt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$lt,  $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$glt, $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$lt,  $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$glt, $n<$($ps)*>> } };
-    (@5 $glt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,  $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@5 $glt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$glt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@5 $glt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,  $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@5 $glt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @5 $glt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$glt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@6 $glt:tt $def_lt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$lt,     $n<$($ps)*>> } };
+    (@6 $glt:tt $def_lt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$def_lt, $n<$($ps)*>> } };
+    (@6 $glt:tt $def_lt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$lt,     $n<$($ps)*>> } };
+    (@6 $glt:tt $def_lt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$def_lt, $n<$($ps)*>> } };
+    (@6 $glt:tt $def_lt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,     $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@6 $glt:tt $def_lt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$def_lt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@6 $glt:tt $def_lt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,     $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@6 $glt:tt $def_lt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$def_lt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
 
-    (@5 $glt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { $crate::ExplicitParams<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
+    (@6 NONE    $def_lt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => {            $crate::ExplicitParams<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
+    (@6 $glt:tt $def_lt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { & $glt mut $crate::ExplicitParams<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
 }
 
 // ===============
@@ -1821,6 +1953,11 @@ macro_rules! partial {
 pub trait Partial<'s, Target> {
     type Rest;
     fn split_impl(&'s mut self) -> (Target, Self::Rest);
+}
+
+pub trait IntoPartial<Target> {
+    type Rest;
+    fn into_split_impl(self) -> (Target, Self::Rest);
 }
 
 pub trait SplitHelper<'s> {
@@ -1843,6 +1980,13 @@ pub trait PartialHelper<'s> {
 
     #[track_caller]
     #[inline(always)]
+    fn into_partial_borrow_or_eq<Target>(self) -> Target
+    where Self: Sized + IntoPartial<Target> {
+        self.into_split_impl().0
+    }
+
+    #[track_caller]
+    #[inline(always)]
     fn partial_borrow<Target>(&'s mut self) -> Target
     where Self: Partial<'s, Target> + NotEq<Target> {
         self.partial_borrow_or_eq()
@@ -1855,10 +1999,17 @@ impl<'t, T> PartialHelper<'t> for T {}
 // ===========
 
 
+pub trait AsRefsMut {
+    type Target<'t> where Self: 't;
+    fn as_refs_mut<'t>(&'t mut self) -> Self::Target<'t>;
+}
+
+extern crate self as borrow;
+
 mod sandbox {
-    extern crate self as borrow;
 
     use std::fmt::Debug;
+    use super::IntoPartial;
 
     pub struct GeometryCtx {}
     pub struct MaterialCtx {}
@@ -1873,9 +2024,25 @@ mod sandbox {
         pub mesh: MeshCtx,
         pub scene: SceneCtx,
     }
+
+
+
+    impl<'s, T, Target> borrow::Partial<'s, Target> for T where
+        T: borrow::AsRefsMut + 's,
+        <T as borrow::AsRefsMut>::Target<'s>: borrow::IntoPartial<Target>,
+    {
+        type Rest = <<T as borrow::AsRefsMut>::Target<'s> as borrow::IntoPartial<Target>>::Rest;
+        fn split_impl(&'s mut self) -> (Target, Self::Rest) {
+            self.as_refs_mut().into_split_impl()
+        }
+    }
 }
 
+
+
 use sandbox::*;
+
+use borrow::partial as p;
 
 pub fn test() {
     let version: usize = 0;
@@ -1887,13 +2054,14 @@ pub fn test() {
         scene: SceneCtx {},
     };
 
-    let mut ctx_ref_mut = ctx.as_refs_mut();
+    let mut ctx_ref_mut = ctx.partial_borrow();
 
-    test2(ctx_ref_mut.partial_borrow_or_eq());
+    // test2(&mut ctx_ref_mut.partial_borrow_or_eq());
+    test2(&mut ctx_ref_mut);
 
 }
 
-fn test2<'s, 't>(mut ctx: partial!(&'t<mut *>Ctx<'s, usize>)) {
+fn test2<'s, 't>(ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
     {
         let _y = ctx.extract_geometry();
         let _y = ctx.extract_version();
@@ -1902,13 +2070,20 @@ fn test2<'s, 't>(mut ctx: partial!(&'t<mut *>Ctx<'s, usize>)) {
         // let _x = ctx.split::<p!(&<'_ mut geometry>Ctx<'s, usize>)>();
     }
     println!(">>>");
-    test5(ctx.partial_borrow());
+    test5(p!(&mut ctx));
+    test6(ctx);
+    // test6(ctx);
     println!("<<<");
     // &*ctx.scene;
 
 }
 
-fn test5<'t>(_ctx: partial!(&<geometry>Ctx<'_, usize>)) {
+fn test5<'t>(_ctx: p!(&<geometry>Ctx<'_, usize>)) {
+    // &*_ctx.geometry;
+    println!("yo")
+}
+
+fn test6<'t>(_ctx: p!(&'t<mut *>Ctx<'_, usize>)) {
     // &*_ctx.geometry;
     println!("yo")
 }
@@ -1920,8 +2095,8 @@ fn test5<'t>(_ctx: partial!(&<geometry>Ctx<'_, usize>)) {
 
 
 
-
-
-impl<'t, T: Debug> partial!(&<>Ctx<'t, T>) {
-
-}
+//
+//
+// impl<'t, T: Debug> partial!(&<>Ctx<'t, T>) {
+//
+// }
