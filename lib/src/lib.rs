@@ -1312,15 +1312,18 @@ impl<Source, Target> NotEqHelper<Target> for Source where
 pub trait NotEqFields<Target> {}
 impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<Hidden>, T2> {}
 impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<Hidden>, T2> {}
-impl<   T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<Hidden>, T2> where T: NotEqFields<T2> {}
+impl<   T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<Hidden>, T2>
+where T: NotEqFields<T2> {}
 
 impl<H, T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<&'_ mut H>, T2> {}
 impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<&'_ mut H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<&'_ mut H>, T2> where T: NotEqFields<T2> {}
+impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<&'_ mut H>, T2>
+where T: NotEqFields<T2> {}
 
 impl<H, T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<&'_ H>, T2> {}
 impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<&'_ H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<&'_ H>, T2> where T: NotEqFields<T2> {}
+impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<&'_ H>, T2>
+where T: NotEqFields<T2> {}
 
 // ====================
 // === UsageTracker ===
@@ -1644,26 +1647,7 @@ where T: HasField<Field> {
     }
 }
 
-// impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T>
-// where T: Partial<'x, T2> {
-//     type Rest = ExplicitParams<S, <T as Partial<'x, T2>>::Rest>;
-//     #[track_caller]
-//     #[inline(always)]
-//     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
-//         let (value, rest) = self.value.split_impl();
-//         (ExplicitParams::new(value), ExplicitParams::new(rest))
-//     }
-// }
 
-// impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T>
-// where T: Partial<'x, ExplicitParams<S, T2>> {
-//     type Rest = <T as Partial<'x, ExplicitParams<S, T2>>>::Rest;
-//     #[track_caller]
-//     #[inline(always)]
-//     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
-//         self.value.split_impl()
-//     }
-// }
 
 impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T> where
     Self: CloneMut<'x>,
@@ -1702,34 +1686,16 @@ pub struct Hidden;
 
 pub struct AcquireMarker;
 
-pub trait Acquire<'s, This, Target> {
+pub trait Acquire<This, Target> {
     type Rest;
-    fn acquire(this: &'s mut Field<This>) -> (Field<Target>, Field<Self::Rest>);
+    fn acquire(this: Field<This>) -> (Field<Target>, Field<Self::Rest>);
 }
 
-pub trait IntoAcquire<This, Target> {
-    type Rest;
-    fn into_acquire(this: Field<This>) -> (Field<Target>, Field<Self::Rest>);
-}
-
-impl<'s, 't, T> Acquire<'s, &'t mut T, Hidden> for AcquireMarker
-where T: 's {
-    type Rest = &'s mut T;
-    #[track_caller]
-    #[inline(always)]
-    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<Hidden>, Field<Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
-        )
-    }
-}
-
-impl<'t, T> IntoAcquire<&'t mut T, Hidden> for AcquireMarker {
+impl<'t, T> Acquire<&'t mut T, Hidden> for AcquireMarker {
     type Rest = &'t mut T;
     #[track_caller]
     #[inline(always)]
-    fn into_acquire(this: Field<&'t mut T>) -> (Field<Hidden>, Field<Self::Rest>) {
+    fn acquire(this: Field<&'t mut T>) -> (Field<Hidden>, Field<Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
@@ -1737,11 +1703,11 @@ impl<'t, T> IntoAcquire<&'t mut T, Hidden> for AcquireMarker {
     }
 }
 
-impl<'s, 't, T> Acquire<'s, &'t T, Hidden> for AcquireMarker {
+impl<'t, T> Acquire<&'t T, Hidden> for AcquireMarker {
     type Rest = &'t T;
     #[track_caller]
     #[inline(always)]
-    fn acquire(this: &'s mut Field<&'t T>) -> (Field<Hidden>, Field<Self::Rest>) {
+    fn acquire(this: Field<&'t T>) -> (Field<Hidden>, Field<Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
@@ -1749,23 +1715,11 @@ impl<'s, 't, T> Acquire<'s, &'t T, Hidden> for AcquireMarker {
     }
 }
 
-impl<'t, T> IntoAcquire<&'t T, Hidden> for AcquireMarker {
-    type Rest = &'t T;
-    #[track_caller]
-    #[inline(always)]
-    fn into_acquire(this: Field<&'t T>) -> (Field<Hidden>, Field<Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
-        )
-    }
-}
-
-impl<'s> Acquire<'s, Hidden, Hidden> for AcquireMarker {
+impl Acquire<Hidden, Hidden> for AcquireMarker {
     type Rest = Hidden;
     #[track_caller]
     #[inline(always)]
-    fn acquire(this: &'s mut Field<Hidden>) -> (Field<Hidden>, Field<Self::Rest>) {
+    fn acquire(this: Field<Hidden>) -> (Field<Hidden>, Field<Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
@@ -1773,63 +1727,32 @@ impl<'s> Acquire<'s, Hidden, Hidden> for AcquireMarker {
     }
 }
 
-impl IntoAcquire<Hidden, Hidden> for AcquireMarker {
-    type Rest = Hidden;
-    #[track_caller]
-    #[inline(always)]
-    fn into_acquire(this: Field<Hidden>) -> (Field<Hidden>, Field<Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
-        )
-    }
-}
-
-impl<'s, 't, 'y, T> Acquire<'s, &'t mut T, &'y mut T> for AcquireMarker
-where 's: 'y {
+impl<'t, 'y, T> Acquire<&'t mut T, &'y mut T> for AcquireMarker
+where 't: 'y {
     type Rest = Hidden;
     #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
+    fn acquire(this: Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
         let rest = this.clone_as_hidden();
         (Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()), rest)
     }
     #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
+    fn acquire(this: Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
         let rest = this.clone_as_hidden();
         (Field::cons(this.value_no_usage_tracking), rest)
     }
 }
 
-impl<'t, 'y, T> IntoAcquire<&'t mut T, &'y mut T> for AcquireMarker
+impl<'t, 'y, T> Acquire<&'t mut T, &'y T> for AcquireMarker
 where 't: 'y {
-    type Rest = Hidden;
+    type Rest = &'t T;
     #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn into_acquire(this: Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
-        let rest = this.clone_as_hidden();
-        (Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()), rest)
-    }
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(not(usage_tracking_enabled))]
-    fn into_acquire(this: Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
-        let rest = this.clone_as_hidden();
-        (Field::cons(this.value_no_usage_tracking), rest)
-    }
-}
-
-impl<'s, 't, 'y, T: 's> Acquire<'s, &'t mut T, &'y T> for AcquireMarker
-where 's: 'y {
-    type Rest = &'s T;
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(usage_tracking_enabled)]
-    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
+    fn acquire(this: Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
         (
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
@@ -1838,18 +1761,18 @@ where 's: 'y {
     #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire(this: &'s mut Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
+    fn acquire(this: Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
         (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking))
     }
 }
 
-impl<'t, 'y, T> IntoAcquire<&'t mut T, &'y T> for AcquireMarker
+impl<'t, 'y, T> Acquire<&'t T, &'y T> for AcquireMarker
 where 't: 'y {
     type Rest = &'t T;
     #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn into_acquire(this: Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
+    fn acquire(this: Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
         (
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
@@ -1858,47 +1781,7 @@ where 't: 'y {
     #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn into_acquire(this: Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
-        (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking))
-    }
-}
-
-impl<'s, 't, 'y, T> Acquire<'s, &'t T, &'y T> for AcquireMarker
-where 't: 'y {
-    type Rest = &'t T;
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(usage_tracking_enabled)]
-    fn acquire(this: &'s mut Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
-        (
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
-        )
-    }
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(not(usage_tracking_enabled))]
-    fn acquire(this: &'s mut Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
-        (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking),)
-    }
-}
-
-impl<'t, 'y, T> IntoAcquire<&'t T, &'y T> for AcquireMarker
-where 't: 'y {
-    type Rest = &'t T;
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(usage_tracking_enabled)]
-    fn into_acquire(this: Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
-        (
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child()),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
-        )
-    }
-    #[track_caller]
-    #[inline(always)]
-    #[cfg(not(usage_tracking_enabled))]
-    fn into_acquire(this: Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
+    fn acquire(this: Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
         (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking),)
     }
 }
@@ -2050,36 +1933,6 @@ mod sandbox {
             ExplicitParams::new(self.value.clone_mut())
         }
     }
-
-    // impl<'s, __S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::CloneMut<'s>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // where
-    //     borrow::Field<__Version>: borrow::FieldClone<'s>,
-    //     borrow::Field<__Geometry>: borrow::FieldClone<'s>,
-    //     borrow::Field<__Material>: borrow::FieldClone<'s>,
-    //     borrow::Field<__Mesh>: borrow::FieldClone<'s>,
-    //     borrow::Field<__Scene>: borrow::FieldClone<'s>,
-    // {
-    //     type Cloned = CtxRef<
-    //         __S__,
-    //         borrow::FieldCloned<'s, borrow::Field<__Version>>,
-    //         borrow::FieldCloned<'s, borrow::Field<__Geometry>>,
-    //         borrow::FieldCloned<'s, borrow::Field<__Material>>,
-    //         borrow::FieldCloned<'s, borrow::Field<__Mesh>>,
-    //         borrow::FieldCloned<'s, borrow::Field<__Scene>>
-    //     >;
-    //     fn clone_mut(&'s mut self) -> Self::Cloned {
-    //         use borrow::FieldClone;
-    //         CtxRef {
-    //             version: self.version.field_clone(),
-    //             geometry: self.geometry.field_clone(),
-    //             material: self.material.field_clone(),
-    //             mesh: self.mesh.field_clone(),
-    //             scene: self.scene.field_clone(),
-    //             marker: std::marker::PhantomData,
-    //         }
-    //     }
-    // }
 }
 
 
@@ -2099,6 +1952,7 @@ pub fn test() {
     };
 
     let mut ctx_ref_mut = ctx.partial_borrow();
+    // ctx_ref_mut.disable_field_usage_tracking_shallow();
 
     // test2(&mut ctx_ref_mut.partial_borrow_or_eq());
     test2(&mut ctx_ref_mut);
@@ -2124,7 +1978,7 @@ fn test2<'s, 't>(ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
     }
     println!(">>>");
     test5(p!(&mut ctx));
-    test6(ctx);
+    // test6(ctx);
     // test6(ctx);
     println!("<<<");
     // &*ctx.scene;
@@ -2132,7 +1986,7 @@ fn test2<'s, 't>(ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
 }
 
 fn test5<'t>(_ctx: p!(&<geometry>Ctx<'_, usize>)) {
-    // &*_ctx.geometry;
+    &*_ctx.geometry;
     println!("yo")
 }
 

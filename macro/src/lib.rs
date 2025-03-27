@@ -425,70 +425,6 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //     }
     // }
     // ```
-    // out.push({
-    //     let field_params_target = fields_param.iter().map(|i| {
-    //         Ident::new(&format!("{i}{}", internal("Target")), i.span())
-    //     }).collect_vec();
-    //
-    //     let field_params_rest = fields_param.iter().map(|i| {
-    //         Ident::new(&format!("{i}{}", internal("Rest")), i.span())
-    //     }).collect_vec();
-    //
-    //     let fields_rest_ident = fields_ident.iter().map(|i|
-    //         Ident::new(&format!("{}{}", internal(&i.to_string()), internal("rest")), i.span())
-    //     ).collect_vec();
-    //
-    //     quote! {
-    //         #[allow(non_camel_case_types)]
-    //         #[allow(non_snake_case)]
-    //         impl<'__a__, __S__,
-    //             #(#fields_param,)*
-    //             #(#field_params_target,)*
-    //             #(#field_params_rest,)*
-    //         >
-    //         borrow::Partial<'__a__, borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_target,)*>>>
-    //         for #ref_ident<__S__, #(#fields_param,)*>
-    //         where
-    //             #(
-    //                 borrow::AcquireMarker: borrow::Acquire<
-    //                     '__a__,
-    //                     #fields_param,
-    //                     #field_params_target,
-    //                     Rest=#field_params_rest
-    //                 >,
-    //             )*
-    //         {
-    //             type Rest = borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_rest,)*>>;
-    //
-    //             #[track_caller]
-    //             #[inline(always)]
-    //             fn split_impl(
-    //                 &'__a__ mut self
-    //             ) -> (
-    //                 borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_target,)*>>,
-    //                 Self::Rest
-    //             ) {
-    //                 use borrow::Acquire;
-    //                 #(let (#fields_ident, #fields_rest_ident) =
-    //                     borrow::AcquireMarker::acquire(&mut self.#fields_ident);)*
-    //                 (
-    //                     borrow::ExplicitParams::new(
-    //                         #ref_ident {
-    //                             #(#fields_ident,)*
-    //                             marker: std::marker::PhantomData
-    //                         }
-    //                     ),
-    //                     borrow::ExplicitParams::new(
-    //                         #ref_ident {
-    //                             #(#fields_ident: #fields_rest_ident,)*
-    //                             marker: std::marker::PhantomData
-    //                         }
-    //                     )
-    //                 )
-    //             }
-    //         }
-    //     }
-    // });
 
     out.push({
         let field_params_target = fields_param.iter().map(|i| {
@@ -515,7 +451,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             for #ref_ident<__S__, #(#fields_param,)*>
             where
                 #(
-                    borrow::AcquireMarker: borrow::IntoAcquire<
+                    borrow::AcquireMarker: borrow::Acquire<
                         #fields_param,
                         #field_params_target,
                         Rest=#field_params_rest
@@ -532,9 +468,9 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                     borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_target,)*>>,
                     Self::Rest
                 ) {
-                    use borrow::IntoAcquire;
+                    use borrow::Acquire;
                     #(let (#fields_ident, #fields_rest_ident) =
-                        borrow::AcquireMarker::into_acquire(self.#fields_ident);)*
+                        borrow::AcquireMarker::acquire(self.#fields_ident);)*
                     (
                         borrow::ExplicitParams::new(
                             #ref_ident {
