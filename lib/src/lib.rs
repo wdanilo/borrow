@@ -1331,7 +1331,7 @@ where T: NotEqFields<T2> {}
 
 #[derive(Debug)]
 struct UsageTracker {
-    label: &'static str,
+    label: String,
     disabled: Cell<bool>,
     loc: Arc<String>,
     used: Arc<Cell<bool>>,
@@ -1340,9 +1340,10 @@ struct UsageTracker {
 
 impl Drop for UsageTracker {
     fn drop(&mut self) {
+        println!("{} DROP used={} disabled={} parent={:?}", self.label, self.used.get(), self.disabled.get(), self.parent);
         if !self.used.get() {
             if !self.disabled.get() {
-                error!("Warning [{}]: Field '{}' was not used.", self.loc, self.label);
+                error!("!!! Warning [{}]: Field '{}' was not used.", self.loc, self.label);
             }
         } else if let Some(parent) = self.parent.take() {
             parent.set(true);
@@ -1352,9 +1353,10 @@ impl Drop for UsageTracker {
 
 impl UsageTracker {
     #[track_caller]
-    fn new(label: &'static str, used: Arc<Cell<bool>>, parent: Option<Arc<Cell<bool>>>, disabled: Cell<bool>) -> Self {
+    fn new(label: &str, used: Arc<Cell<bool>>, parent: Option<Arc<Cell<bool>>>, disabled: Cell<bool>) -> Self {
         let call_loc = std::panic::Location::caller();
         let loc = Arc::new(format!("{}:{}", call_loc.file(), call_loc.line()));
+        let label = label.into();
         Self { label, loc, used, parent, disabled }
     }
 
@@ -1365,35 +1367,41 @@ impl UsageTracker {
     //
     #[track_caller]
     fn clone_as_used(&self) -> Self {
-        Self::new(self.label, Arc::new(Cell::new(true)), None, Cell::new(false))
+        println!("{} clone_as_used", self.label);
+        Self::new(&format!("{}.clone_as_used", self.label), Arc::new(Cell::new(true)), None, Cell::new(false))
     }
 
     #[track_caller]
     fn new_child(&self) -> Self {
+        println!("{} new_child", self.label);
         let used = Default::default();
         let parent = Some(self.used.clone());
-        Self::new(self.label, used, parent, Cell::new(false))
+        Self::new(&format!("{}.new_child", self.label), used, parent, Cell::new(false))
     }
 
     #[track_caller]
     fn new_child_disabled(&self) -> Self {
+        println!("{} new_child_disabled", self.label);
         let used = Default::default();
         let parent = Some(self.used.clone());
-        Self::new(self.label, used, parent, Cell::new(true))
+        Self::new(&format!("{}.new_child_disabled", self.label), used, parent, Cell::new(true))
     }
 
     fn mark_as_used(&self) {
+        println!("{} mark_as_used", self.label);
         self.used.set(true);
     }
 
     fn disable(&self) {
+        println!("{} disable", self.label);
         self.disabled.set(true);
     }
 }
 
 impl Clone for UsageTracker {
     fn clone(&self) -> Self {
-        Self::new(self.label, self.used.clone(), self.parent.clone(), self.disabled.clone())
+        println!("{} clone", self.label);
+        Self::new(&format!("{}.clone", self.label), self.used.clone(), self.parent.clone(), Cell::new(true)) // FIXME?
     }
 }
 
@@ -1487,6 +1495,7 @@ impl<T> Deref for Field<T> {
     type Target = T;
     #[inline(always)]
     fn deref(&self) -> &T {
+        println!("deref");
         #[cfg(usage_tracking_enabled)]
         self.usage_tracker.mark_as_used();
         &self.value_no_usage_tracking
@@ -1496,6 +1505,7 @@ impl<T> Deref for Field<T> {
 impl<T> DerefMut for Field<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
+        println!("deref_mut");
         #[cfg(usage_tracking_enabled)]
         self.usage_tracker.mark_as_used();
         &mut self.value_no_usage_tracking
@@ -1534,7 +1544,7 @@ impl<'s> FieldClone<'s> for Field<Hidden> {
     type Cloned = Hidden;
     fn field_clone(&'s mut self) -> Field<Self::Cloned> {
         let usage_tracker = self.usage_tracker.clone();
-        self.usage_tracker.disable();
+        // self.usage_tracker.disable();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
 }
@@ -1543,7 +1553,7 @@ impl<'s, 't, T> FieldClone<'s> for Field<&'t T> {
     type Cloned = &'t T;
     fn field_clone(&'s mut self) -> Field<Self::Cloned> {
         let usage_tracker = self.usage_tracker.clone();
-        self.usage_tracker.disable();
+        // self.usage_tracker.disable();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
 }
@@ -1552,7 +1562,7 @@ impl<'s, 't, T: 's> FieldClone<'s> for Field<&'t mut T> {
     type Cloned = &'s mut T;
     fn field_clone(&'s mut self) -> Field<Self::Cloned> {
         let usage_tracker = self.usage_tracker.clone();
-        self.usage_tracker.disable();
+        // self.usage_tracker.disable();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
 }
@@ -1647,17 +1657,31 @@ where T: HasField<Field> {
     }
 }
 
-
+impl<Args, T> HasUsageTrackedFields for ExplicitParams<Args, T>
+where T: HasUsageTrackedFields {
+    fn mark_all_fields_as_used(&self) {
+        self.value.mark_all_fields_as_used();
+    }
+    fn disable_field_usage_tracking_shallow(&self) {
+        self.value.disable_field_usage_tracking_shallow();
+    }
+}
 
 impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T> where
     Self: CloneMut<'x>,
-    Cloned<'x, Self>: IntoPartial<ExplicitParams<S, T2>>
+    Cloned<'x, Self>: HasUsageTrackedFields + IntoPartial<ExplicitParams<S, T2>>
 {
     type Rest = <Cloned<'x, Self> as IntoPartial<ExplicitParams<S, T2>>>::Rest;
     #[track_caller]
     #[inline(always)]
     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
-        self.clone_mut().into_split_impl()
+        // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
+        // we need to disable them.
+        println!(">");
+        let this = self.clone_mut();
+        println!("<");
+        // this.disable_field_usage_tracking_shallow();
+        this.into_split_impl()
     }
 }
 
@@ -1909,9 +1933,9 @@ mod sandbox {
     pub struct Ctx<'t, T: Debug> {
         pub version: &'t T,
         pub geometry: GeometryCtx,
-        pub material: MaterialCtx,
-        pub mesh: MeshCtx,
-        pub scene: SceneCtx,
+        // pub material: MaterialCtx,
+        // pub mesh: MeshCtx,
+        // pub scene: SceneCtx,
     }
 
 
@@ -1921,6 +1945,8 @@ mod sandbox {
         <T as borrow::AsRefsMut>::Target<'s>: borrow::IntoPartial<Target>,
     {
         type Rest = <<T as borrow::AsRefsMut>::Target<'s> as borrow::IntoPartial<Target>>::Rest;
+        #[track_caller]
+        #[inline(always)]
         fn split_impl(&'s mut self) -> (Target, Self::Rest) {
             self.as_refs_mut().into_split_impl()
         }
@@ -1946,16 +1972,15 @@ pub fn test() {
     let mut ctx = Ctx {
         version: &version,
         geometry: GeometryCtx {},
-        material: MaterialCtx {},
-        mesh: MeshCtx {},
-        scene: SceneCtx {},
+        // material: MaterialCtx {},
+        // mesh: MeshCtx {},
+        // scene: SceneCtx {},
     };
 
-    let mut ctx_ref_mut = ctx.partial_borrow();
     // ctx_ref_mut.disable_field_usage_tracking_shallow();
 
     // test2(&mut ctx_ref_mut.partial_borrow_or_eq());
-    test2(&mut ctx_ref_mut);
+    test2(p!(&mut ctx));
 
 
     // pub trait CloneMut<'s> {
@@ -1978,7 +2003,7 @@ fn test2<'s, 't>(ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
     }
     println!(">>>");
     test5(p!(&mut ctx));
-    // test6(ctx);
+    test6(ctx);
     // test6(ctx);
     println!("<<<");
     // &*ctx.scene;
@@ -1986,7 +2011,7 @@ fn test2<'s, 't>(ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
 }
 
 fn test5<'t>(_ctx: p!(&<geometry>Ctx<'_, usize>)) {
-    &*_ctx.geometry;
+    // &*_ctx.geometry;
     println!("yo")
 }
 
