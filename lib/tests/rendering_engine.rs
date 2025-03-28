@@ -15,10 +15,10 @@ use borrow::traits::*;
 #[test]
 fn test_types() {
     let mut ctx = Ctx::mock();
-    render_pass1(&mut ctx.as_refs_mut());
+    render_pass1(ctx.as_refs_mut());
 }
 
-fn render_pass1(ctx: p!(&<mut *> Ctx)) {
+fn render_pass1(mut ctx: p!(&<mut *> Ctx)) {
     let (scene, mut ctx2) = ctx.extract_scene();
     for scene in &scene.data {
         for mesh in &scene.meshes {
@@ -37,6 +37,6 @@ fn render_scene(_ctx: p!(&<mesh, mut geometry, mut material> Ctx), _mesh: usize)
 
 // === Type Aliases ===
 
-type RenderCtx<'t> = p!(<'t, scene> Ctx);
-type GlyphCtx<'t> = p!(<'t, geometry, material, mesh> Ctx);
+type RenderCtx<'t> = p!(&'t<scene> Ctx);
+type GlyphCtx<'t> = p!(&'t<geometry, material, mesh> Ctx);
 // type GlyphRenderCtx<'t> = Union<RenderCtx<'t>, GlyphCtx<'t>>;

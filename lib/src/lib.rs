@@ -903,356 +903,6 @@
 //! <br/>
 //! <br/>
 
-
-
-
-// // ==============
-// // === Traits ===
-// // ==============
-//
-// pub mod traits {
-//     pub use super::Acquire as _;
-//     pub use super::Partial as _;
-//     pub use super::PartialHelper as _;
-//     pub use super::RefCast as _;
-//     pub use super::AsRefs as _;
-//     pub use super::AsRefsHelper as _;
-// }
-
-//
-// // ==============
-// // === AsRefs ===
-// // ==============
-//
-// /// Borrow all fields of a struct and output a partially borrowed struct, like
-// /// `p!(<mut field1, field2>MyStruct)`.
-// pub trait AsRefs<'t, T> {
-//     fn as_refs_impl(&'t mut self) -> T;
-// }
-//
-// impl<T> AsRefsHelper<'_> for T {}
-// pub trait AsRefsHelper<'t> {
-//     /// Borrow all fields of a struct and output a partially borrowed struct, like
-//     /// `p!(<mut field1, field2>MyStruct)`.
-//     #[inline(always)]
-//     fn as_refs<T>(&'t mut self) -> T
-//     where Self: AsRefs<'t, T> { self.as_refs_impl() }
-// }
-//
-//
-// // =========================
-// // === No Access Wrapper ===
-// // =========================
-//
-// /// A phantom type used to mark fields as hidden in the partially borrowed structs.
-// #[repr(transparent)]
-// #[derive(Debug)]
-// pub struct Hidden<T>(*mut T);
-//
-// impl<T> Copy for Hidden<T> {}
-// impl<T> Clone for Hidden<T> {
-//     fn clone(&self) -> Self { *self }
-// }
-//
-//
-// // ===============
-// // === RefCast ===
-// // ===============
-//
-// pub trait RefCast<'t, T> {
-//     /// All possible casts of a mutable reference: `&mut T` (identity), `&T`, and `Hidden<T>`.
-//     fn ref_cast(&'t mut self) -> T;
-// }
-//
-// impl<'t, T> RefCast<'t, &'t T> for T {
-//     #[inline(always)]
-//     fn ref_cast(&'t mut self) -> &'t T { self }
-// }
-//
-// impl<'t, T> RefCast<'t, &'t mut T> for T {
-//     #[inline(always)]
-//     fn ref_cast(&'t mut self) -> &'t mut T { self }
-// }
-//
-// impl<'t, T> RefCast<'t, Hidden<T>> for T {
-//     #[inline(always)]
-//     fn ref_cast(&'t mut self) -> Hidden<T> { Hidden(self) }
-// }
-//
-//
-// // ==================
-// // === RefFlatten ===
-// // ==================
-//
-// /// Flattens `&mut &mut T` into `&mut T` and `&mut &T` into `&T`.
-// pub trait RefFlatten<'t> {
-//     type Output;
-//     fn ref_flatten(&'t mut self) -> Self::Output;
-// }
-//
-// impl<'t, T: 't> RefFlatten<'t> for &'_ mut T {
-//     type Output = &'t mut T;
-//     fn ref_flatten(&'t mut self) -> Self::Output {
-//         *self
-//     }
-// }
-//
-// impl<'t, T: 't> RefFlatten<'t> for &'_ T {
-//     type Output = &'t T;
-//     fn ref_flatten(&'t mut self) -> Self::Output {
-//         *self
-//     }
-// }
-//
-// pub type RefFlattened<'t, T> = <T as RefFlatten<'t>>::Output;
-//
-//
-// // ===============
-// // === Acquire ===
-// // ===============
-//
-// /// This is a documentation for type-level field borrowing transformation. It involves checking if a
-// /// field of a partially borrowed struct can be borrowed in a specific form and provides the remaining
-// /// fields post-borrow.
-// pub trait           Acquire<Target>                  { type Rest; }
-// impl<T, S>          Acquire<Hidden<T>> for S         { type Rest = S; }
-// impl<'t: 's, 's, T> Acquire<&'s mut T> for &'t mut T { type Rest = Hidden<T>; }
-// impl<'t: 's, 's, T> Acquire<&'s     T> for &'t mut T { type Rest = &'t T; }
-// impl<'t: 's, 's, T> Acquire<&'s     T> for &'t     T { type Rest = &'t T; }
-//
-// /// Remaining fields after borrowing a specific field. See the documentation of [`Acquire`] to learn more.
-// pub type Acquired<This, Target> = <This as Acquire<Target>>::Rest;
-//
-//
-// // ===================
-// // === SplitFields ===
-// // ===================
-//
-// /// Split `HList` of borrows into target `HList` of borrows and a `HList` of remaining borrows
-// /// after acquiring the target. See the documentation of [`Acquire`] for more information.
-// ///
-// /// This trait is automatically implemented for all types.
-// pub trait          SplitFields<Target>               { type Rest; }
-// impl               SplitFields<Nil>          for Nil { type Rest = Nil; }
-// impl<H, H2, T, T2> SplitFields<Cons<H2, T2>> for Cons<H, T> where
-// T: SplitFields<T2>, H: Acquire<H2> {
-//     type Rest = Cons<Acquired<H, H2>, <T as SplitFields<T2>>::Rest>;
-// }
-//
-// type SplitFieldsRest<T, Target> = <T as SplitFields<Target>>::Rest;
-//
-//
-// // ===============
-// // === Partial ===
-// // ===============
-//
-// /// Helper trait for [`Partial`]. This trait is automatically implemented by the [`borrow!`]
-// /// macro. It is used to provide Rust type inferencer with additional type information. In particular, it
-// /// is used to tell that any partial borrow of a struct results in the same struct type, but parametrized
-// /// differently. It is needed for Rust to correctly infer target types for associated methods, like:
-// ///
-// /// ```ignore
-// /// #[derive(Partial)]
-// /// #[module(crate)]
-// /// pub struct Ctx {
-// ///     pub geometry: GeometryCtx,
-// ///     pub material: MaterialCtx,
-// ///     pub mesh: MeshCtx,
-// ///     pub scene: SceneCtx,
-// /// }
-// ///
-// /// impl p!(<mut geometry, mut material>Ctx) {
-// ///     fn my_method(&mut self){}
-// /// }
-// ///
-// /// fn test(ctx: p!(&<mut *> Ctx)) {
-// ///     ctx.partial_borrow().my_method();
-// /// }
-// /// ```
-// pub trait PartialInferenceGuide<Target> {}
-//
-// /// Implementation of partial field borrowing. The `Target` type parameter specifies the required
-// /// partial borrow representation, such as `p!(<mut field1, field2>MyStruct)`.
-// ///
-// /// This trait is automatically implemented for all partial borrow representations.
-// pub trait Partial<Target> : PartialInferenceGuide<Target> {
-//     type Rest;
-//
-//     /// See the documentation of [`PartialHelper::partial_borrow`].
-//     #[inline(always)]
-//     fn partial_borrow_impl(&mut self) -> &mut Target {
-//         unsafe { &mut *(self as *mut _ as *mut _) }
-//     }
-//
-//     /// See the documentation of [`PartialHelper::split`].
-//     #[inline(always)]
-//     fn split_impl(&mut self) -> (&mut Target, &mut Self::Rest) {
-//         let a = unsafe { &mut *(self as *mut _ as *mut _) };
-//         let b = unsafe { &mut *(self as *mut _ as *mut _) };
-//         (a, b)
-//     }
-// }
-//
-// impl<Source, Target> Partial<Target> for Source where
-// Source: PartialInferenceGuide<Target>,
-// Source: HasFields,
-// Target: HasFields,
-// Fields<Source>: SplitFields<Fields<Target>>,
-// Target: ReplaceFields<SplitFieldsRest<Fields<Source>, Fields<Target>>> {
-//     type Rest = ReplacedFields<Target, SplitFieldsRest<Fields<Source>, Fields<Target>>>;
-// }
-//
-// /// Helper for [`Partial`]. This trait is automatically implemented for all types.
-// impl<Target> PartialHelper for Target {}
-// pub trait PartialHelper {
-//     /// Borrow fields from this partial borrow for the `Target` partial borrow, like
-//     /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
-//     #[inline(always)]
-//     fn partial_borrow<Target>(&mut self) -> &mut Target
-//     where Self: PartialNotEq<Target> { self.partial_borrow_impl() }
-//
-//     /// Borrow fields from this partial borrow for the `Target` partial borrow, like
-//     /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
-//     #[inline(always)]
-//     fn part<Target>(&mut self) -> &mut Target
-//     where Self: PartialNotEq<Target> { self.partial_borrow_impl() }
-//
-//     /// Borrow fields from this partial borrow for the `Target` partial borrow, like
-//     /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
-//     #[inline(always)]
-//     fn partial_borrow_or_eq<Target>(&mut self) -> &mut Target
-//     where Self: Partial<Target> { self.partial_borrow_impl() }
-//
-//     /// Split this partial borrow into the `Target` partial borrow and the remaining fields, like
-//     /// `let (scene, ctx2) = ctx.split::<p!(<mut scene>Ctx)>()`.
-//     #[inline(always)]
-//     fn split<Target>(&mut self) -> (&mut Target, &mut Self::Rest)
-//     where Self: Partial<Target> { self.split_impl() }
-// }
-//
-//
-// // ====================
-// // === PartialNotEq ===
-// // ====================
-//
-// pub trait PartialNotEq<Target> : Partial<Target> + NotEq<Target> {}
-// impl<Target, T> PartialNotEq<Target> for T where T: Partial<Target> + NotEq<Target> {}
-//
-//
-// // =============
-// // === NotEq ===
-// // =============
-//
-// pub trait NotEq<Target> {}
-// impl<Source, Target> NotEq<Target> for Source where
-//     Source: HasFields,
-//     Target: HasFields,
-//     Fields<Source>: NotEqFields<Fields<Target>> {
-// }
-//
-// pub trait NotEqFields<Target> {}
-// impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<Hidden<H>, T2> {}
-// impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<Hidden<H>, T2> {}
-// impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<Hidden<H>, T2> where T: NotEqFields<T2> {}
-//
-// impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ mut H, T2> {}
-// impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ mut H, T2> {}
-// impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ mut H, T2> where T: NotEqFields<T2> {}
-//
-// impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ H, T2> {}
-// impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ H, T2> {}
-// impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ H, T2> where T: NotEqFields<T2> {}
-//
-//
-// // ==================
-// // === UnifyField ===
-// // ==================
-//
-// pub trait UnifyField<Other> { type Result; }
-//
-// impl<    T> UnifyField<Hidden<T>> for Hidden<T> { type Result = Hidden<T>; }
-// impl<'t, T> UnifyField<&'t     T> for Hidden<T> { type Result = &'t     T; }
-// impl<'t, T> UnifyField<&'t mut T> for Hidden<T> { type Result = &'t mut T; }
-//
-// impl<'t, T> UnifyField<Hidden<T>> for &'t T { type Result = &'t     T; }
-// impl<'t, T> UnifyField<&'t     T> for &'t T { type Result = &'t     T; }
-// impl<'t, T> UnifyField<&'t mut T> for &'t T { type Result = &'t mut T; }
-//
-// impl<'t, T> UnifyField<Hidden<T>> for &'t mut T { type Result = &'t mut T; }
-// impl<'t, T> UnifyField<&'t     T> for &'t mut T { type Result = &'t mut T; }
-// impl<'t, T> UnifyField<&'t mut T> for &'t mut T { type Result = &'t mut T; }
-//
-// type ConcatenatedField<T, Other> = <T as UnifyField<Other>>::Result;
-//
-//
-// // ====================
-// // === UnifyFields ===
-// // ====================
-//
-// pub trait UnifyFields<Other> { type Result; }
-// type ConcatFieldsResult<T, Other> = <T as UnifyFields<Other>>::Result;
-//
-// impl UnifyFields<Nil> for Nil {
-//     type Result = Nil;
-// }
-//
-// impl<H, H2, T, T2> UnifyFields<Cons<H2, T2>> for Cons<H, T> where
-//     H: UnifyField<H2>,
-//     T: UnifyFields<T2> {
-//     type Result = Cons<ConcatenatedField<H, H2>, <T as UnifyFields<T2>>::Result>;
-// }
-//
-// pub trait Unify<Other> {
-//     type Result;
-// }
-//
-// impl<Source, Other> Unify<Other> for Source where
-//     Source: HasFields,
-//     Other: HasFields,
-//     Fields<Source>: UnifyFields<Fields<Other>>,
-//     Other: ReplaceFields<ConcatFieldsResult<Fields<Source>, Fields<Other>>> {
-//     type Result = ReplacedFields<Other, ConcatFieldsResult<Fields<Source>, Fields<Other>>>;
-// }
-//
-// pub type Union<T, Other> = <T as Unify<Other>>::Result;
-//
-//
-// // ==============
-// // === Macros ===
-// // ==============
-//
-// #[macro_export]
-// macro_rules! lifetime_chooser {
-//     ([$lt1:lifetime]               $($ts:tt)*) => {& $lt1 $($ts)*};
-//     ([$lt1:lifetime $lt2:lifetime] $($ts:tt)*) => {& $lt2 $($ts)*};
-// }
-//
-// #[macro_export]
-// macro_rules! partial {
-//     // &'a <...> Ctx <...>
-//     (& $lt:lifetime $($ts:tt)*) => { & $lt mut $crate::partial! { $($ts)* } };
-//     (& $($ts:tt)*)              => { &     mut $crate::partial! { $($ts)* } };
-//     (< $($ts:tt)*)              => {           $crate::partial! { @1 [] $($ts)* } };
-//
-//     // <...> Ctx <...>
-//     (@1 $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @2 $n $fs          $($ts)* } };
-//     (@1 [$($fs:tt)*]   $t:tt    $($ts:tt)*) => { $crate::partial! { @1    [$($fs)* $t] $($ts)* } };
-//
-//     // Ctx <...>
-//     (@2 $n:ident $fs:tt)              => { $crate::partial! { @4 $n [] $fs } };
-//     (@2 $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @3 $n [] $fs $($ts)* } };
-//
-//     // <...>
-//     (@3 $n:ident $ps:tt       $fs:tt >)                => { $crate::partial! { @4 $n $ps          $fs } };
-//     (@3 $n:ident [$($ps:tt)*] $fs:tt $t:tt $($ts:tt)*) => { $crate::partial! { @3 $n [$($ps)* $t] $fs $($ts)* } };
-//
-//     // Production
-//     (@4 $n:ident $ps:tt [$($fs:tt)*]) => { $n! { @1 $ps $($fs)* } };
-// }
-// // ::borrow::partial! { @ 4 Ctx      [ 'static  ,  usize ]           [ mut  material ]                }
-
-// ===================
-
 #![cfg_attr(not(usage_tracking_enabled), allow(unused_imports))]
 #![cfg_attr(not(usage_tracking_enabled), allow(dead_code))]
 
@@ -1266,18 +916,30 @@ pub use reflect::*;
 pub use borrow_macro::*;
 pub use tstr::TS as Str;
 
+use hlist::ItemAt;
+use hlist::SetItemAtResult;
+
 use std::marker::PhantomData;
 
 use std::cell::Cell;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::sync::Arc;
-use hlist::Cons;
 
 pub mod traits {
     pub use super::Partial as _;
     pub use super::PartialHelper as _;
     pub use super::SplitHelper as _;
     pub use super::AsRefsMut as _;
+}
+
+// =============
+// === Utils ===
+// =============
+
+#[inline(always)]
+fn default<T: Default>() -> T {
+    T::default()
 }
 
 // ===============
@@ -1293,57 +955,24 @@ macro_rules! error {
     };
 }
 
-
-// =============
-// === NotEq ===
-// =============
-
-pub trait NotEq<Target> {}
-
-impl<Args, Args2, T, T2> NotEq<ExplicitParams<Args2, T2>> for ExplicitParams<Args, T> where
-    ExplicitParams<Args, T>: NotEqHelper<ExplicitParams<Args2, T2>> {}
-
-pub trait NotEqHelper<Target> {}
-impl<Source, Target> NotEqHelper<Target> for Source where
-    Source: HasFields,
-    Target: HasFields,
-    Fields<Source>: NotEqFields<Fields<Target>> {}
-
-pub trait NotEqFields<Target> {}
-impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<Hidden>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<Hidden>, T2> {}
-impl<   T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<Hidden>, T2>
-where T: NotEqFields<T2> {}
-
-impl<H, T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<&'_ mut H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<&'_ mut H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<&'_ mut H>, T2>
-where T: NotEqFields<T2> {}
-
-impl<H, T, T2> NotEqFields<Cons<Field<Hidden>,    T>> for Cons<Field<&'_ H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<Field<&'_ mut H>, T>> for Cons<Field<&'_ H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<Field<&'_     H>, T>> for Cons<Field<&'_ H>, T2>
-where T: NotEqFields<T2> {}
-
 // ====================
 // === UsageTracker ===
 // ====================
 
 #[derive(Debug)]
 struct UsageTracker {
-    label: String,
-    disabled: Cell<bool>,
+    label: &'static str,
     loc: Arc<String>,
     used: Arc<Cell<bool>>,
     parent: Option<Arc<Cell<bool>>>,
+    disabled: Cell<bool>,
 }
 
 impl Drop for UsageTracker {
     fn drop(&mut self) {
-        println!("{} DROP used={} disabled={} parent={:?}", self.label, self.used.get(), self.disabled.get(), self.parent);
         if !self.used.get() {
             if !self.disabled.get() {
-                error!("!!! Warning [{}]: Field '{}' was not used.", self.loc, self.label);
+                error!("Warning [{}]: Field '{}' was not used.", self.loc, self.label);
             }
         } else if let Some(parent) = self.parent.take() {
             parent.set(true);
@@ -1353,55 +982,47 @@ impl Drop for UsageTracker {
 
 impl UsageTracker {
     #[track_caller]
-    fn new(label: &str, used: Arc<Cell<bool>>, parent: Option<Arc<Cell<bool>>>, disabled: Cell<bool>) -> Self {
+    fn new(
+        label: &'static str,
+        used: Arc<Cell<bool>>,
+        parent: Option<Arc<Cell<bool>>>,
+        disabled: Cell<bool>
+    ) -> Self {
         let call_loc = std::panic::Location::caller();
         let loc = Arc::new(format!("{}:{}", call_loc.file(), call_loc.line()));
-        let label = label.into();
         Self { label, loc, used, parent, disabled }
-    }
-
-    // #[track_caller]
-    // fn clone_with(&self, used: Arc<Cell<bool>>) -> Self {
-    //     Self::new(self.label, used, None, self.disabled)
-    // }
-    //
-    #[track_caller]
-    fn clone_as_used(&self) -> Self {
-        println!("{} clone_as_used", self.label);
-        Self::new(&format!("{}.clone_as_used", self.label), Arc::new(Cell::new(true)), None, Cell::new(false))
     }
 
     #[track_caller]
     fn new_child(&self) -> Self {
-        println!("{} new_child", self.label);
         let used = Default::default();
         let parent = Some(self.used.clone());
-        Self::new(&format!("{}.new_child", self.label), used, parent, Cell::new(false))
+        Self::new(self.label, used, parent, default())
     }
 
     #[track_caller]
     fn new_child_disabled(&self) -> Self {
-        println!("{} new_child_disabled", self.label);
         let used = Default::default();
         let parent = Some(self.used.clone());
-        Self::new(&format!("{}.new_child_disabled", self.label), used, parent, Cell::new(true))
+        Self::new(self.label, used, parent, Cell::new(true))
+    }
+
+    #[track_caller]
+    fn clone_disabled(&self) -> Self {
+        Self::new(self.label, self.used.clone(), self.parent.clone(), Cell::new(true))
+    }
+
+    #[track_caller]
+    fn new_same_label_used(&self) -> Self {
+        Self::new(self.label, Arc::new(Cell::new(true)), None, default())
     }
 
     fn mark_as_used(&self) {
-        println!("{} mark_as_used", self.label);
         self.used.set(true);
     }
 
     fn disable(&self) {
-        println!("{} disable", self.label);
         self.disabled.set(true);
-    }
-}
-
-impl Clone for UsageTracker {
-    fn clone(&self) -> Self {
-        println!("{} clone", self.label);
-        Self::new(&format!("{}.clone", self.label), self.used.clone(), self.parent.clone(), Cell::new(true)) // FIXME?
     }
 }
 
@@ -1410,8 +1031,7 @@ impl Clone for UsageTracker {
 // =============================
 
 pub trait HasUsageTrackedFields {
-    fn mark_all_fields_as_used(&self);
-    fn disable_field_usage_tracking_shallow(&self);
+    fn disable_field_usage_tracking(&self);
 }
 
 // =============
@@ -1431,7 +1051,7 @@ impl<T> Field<T> {
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     pub fn new(label: &'static str, value: T) -> Self {
-        let usage_tracker = UsageTracker::new(label, Arc::default(), None, Cell::new(false));
+        let usage_tracker = UsageTracker::new(label, default(), None, default());
         Self::cons(value, usage_tracker)
     }
 
@@ -1460,7 +1080,7 @@ impl<T> Field<T> {
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     fn clone_as_hidden(&self) -> Field<Hidden> {
-        Field::cons(Hidden, self.usage_tracker.clone_as_used())
+        Field::cons(Hidden, self.usage_tracker.new_same_label_used())
     }
 
     #[track_caller]
@@ -1472,30 +1092,19 @@ impl<T> Field<T> {
 
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    pub fn mark_as_used(&self) {
-        self.usage_tracker.mark_as_used();
-    }
-
-    #[inline(always)]
-    #[cfg(not(usage_tracking_enabled))]
-    fn mark_as_used(&self) {}
-
-    #[inline(always)]
-    #[cfg(usage_tracking_enabled)]
-    pub fn disable_usage_tracking_shallow(&self) {
+    pub fn disable_usage_tracking(&self) {
         self.usage_tracker.disable();
     }
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn disable_usage_tracking_shallow(&self) {}
+    fn disable_usage_tracking(&self) {}
 }
 
 impl<T> Deref for Field<T> {
     type Target = T;
     #[inline(always)]
     fn deref(&self) -> &T {
-        println!("deref");
         #[cfg(usage_tracking_enabled)]
         self.usage_tracker.mark_as_used();
         &self.value_no_usage_tracking
@@ -1505,7 +1114,6 @@ impl<T> Deref for Field<T> {
 impl<T> DerefMut for Field<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
-        println!("deref_mut");
         #[cfg(usage_tracking_enabled)]
         self.usage_tracker.mark_as_used();
         &mut self.value_no_usage_tracking
@@ -1524,45 +1132,44 @@ where T: IntoIterator {
     }
 }
 
-// === Clone ===
+// === CloneRef ===
 
-pub trait CloneMut<'s> {
+pub trait CloneRef<'s> {
     type Cloned;
-    fn clone_mut(&'s mut self) -> Self::Cloned;
+    fn clone_ref_disabled_usage_tracking(&'s mut self) -> Self::Cloned;
 }
 
-pub type Cloned<'s, T> = <T as CloneMut<'s>>::Cloned;
+pub type ClonedRef<'s, T> = <T as CloneRef<'s>>::Cloned;
 
-pub trait FieldClone<'s> {
+// === CloneField ===
+
+pub trait CloneField<'s> {
     type Cloned;
-    fn field_clone(&'s mut self) -> Field<Self::Cloned>;
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned>;
 }
 
-pub type FieldCloned<'s, T> = <T as FieldClone<'s>>::Cloned;
+pub type ClonedField<'s, T> = <T as CloneField<'s>>::Cloned;
 
-impl<'s> FieldClone<'s> for Field<Hidden> {
+impl<'s> CloneField<'s> for Field<Hidden> {
     type Cloned = Hidden;
-    fn field_clone(&'s mut self) -> Field<Self::Cloned> {
-        let usage_tracker = self.usage_tracker.clone();
-        // self.usage_tracker.disable();
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+        let usage_tracker = self.usage_tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
 }
 
-impl<'s, 't, T> FieldClone<'s> for Field<&'t T> {
+impl<'s, 't, T> CloneField<'s> for Field<&'t T> {
     type Cloned = &'t T;
-    fn field_clone(&'s mut self) -> Field<Self::Cloned> {
-        let usage_tracker = self.usage_tracker.clone();
-        // self.usage_tracker.disable();
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+        let usage_tracker = self.usage_tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
 }
 
-impl<'s, 't, T: 's> FieldClone<'s> for Field<&'t mut T> {
+impl<'s, 't, T: 's> CloneField<'s> for Field<&'t mut T> {
     type Cloned = &'s mut T;
-    fn field_clone(&'s mut self) -> Field<Self::Cloned> {
-        let usage_tracker = self.usage_tracker.clone();
-        // self.usage_tracker.disable();
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+        let usage_tracker = self.usage_tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
 }
@@ -1581,21 +1188,13 @@ pub type FieldsAsHidden<T> = <T as HasFieldsExt>::FieldsAsHidden;
 pub type FieldsAsRef<'t, T> = <T as HasFieldsExt>::FieldsAsRef<'t>;
 pub type FieldsAsMut<'t, T> = <T as HasFieldsExt>::FieldsAsMut<'t>;
 
-pub type SetFieldAsMutAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
-    &'t mut hlist::ItemAt<N, Fields<S>>
->;
+pub type SetFieldAsMutAt    <'t, S, N, X> = SetItemAtResult<X, N, &'t mut ItemAt<N, Fields<S>>>;
+pub type SetFieldAsRefAt    <'t, S, N, X> = SetItemAtResult<X, N, &'t     ItemAt<N, Fields<S>>>;
+pub type SetFieldAsHiddenAt <'t,    N, X> = SetItemAtResult<X, N,         Hidden>;
 
-pub type SetFieldAsRefAt<'t, S, N, X> = hlist::SetItemAtResult<X, N,
-    &'t hlist::ItemAt<N, Fields<S>>
->;
-
-pub type SetFieldAsHiddenAt<'t, N, X> = hlist::SetItemAtResult<X, N,
-    Hidden
->;
-
-pub type SetFieldAsMut    <'t, S, F, X> = SetFieldAsMutAt<'t, S, FieldIndex<S, F>, X>;
-pub type SetFieldAsRef    <'t, S, F, X> = SetFieldAsRefAt<'t, S, FieldIndex<S, F>, X>;
-pub type SetFieldAsHidden <'t, S, F, X> = SetFieldAsHiddenAt<'t, FieldIndex<S, F>, X>;
+pub type SetFieldAsMut    <'t, S, F, X> = SetFieldAsMutAt    <'t, S, FieldIndex<S, F>, X>;
+pub type SetFieldAsRef    <'t, S, F, X> = SetFieldAsRefAt    <'t, S, FieldIndex<S, F>, X>;
+pub type SetFieldAsHidden <'t, S, F, X> = SetFieldAsHiddenAt <'t,    FieldIndex<S, F>, X>;
 
 // =======================
 // === AsRefWithFields ===
@@ -1659,28 +1258,22 @@ where T: HasField<Field> {
 
 impl<Args, T> HasUsageTrackedFields for ExplicitParams<Args, T>
 where T: HasUsageTrackedFields {
-    fn mark_all_fields_as_used(&self) {
-        self.value.mark_all_fields_as_used();
-    }
-    fn disable_field_usage_tracking_shallow(&self) {
-        self.value.disable_field_usage_tracking_shallow();
+    fn disable_field_usage_tracking(&self) {
+        self.value.disable_field_usage_tracking();
     }
 }
 
 impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T> where
-    Self: CloneMut<'x>,
-    Cloned<'x, Self>: HasUsageTrackedFields + IntoPartial<ExplicitParams<S, T2>>
+    Self: CloneRef<'x>,
+    ClonedRef<'x, Self>: IntoPartial<ExplicitParams<S, T2>>
 {
-    type Rest = <Cloned<'x, Self> as IntoPartial<ExplicitParams<S, T2>>>::Rest;
+    type Rest = <ClonedRef<'x, Self> as IntoPartial<ExplicitParams<S, T2>>>::Rest;
     #[track_caller]
     #[inline(always)]
     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
         // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
         // we need to disable them.
-        println!(">");
-        let this = self.clone_mut();
-        println!("<");
-        // this.disable_field_usage_tracking_shallow();
+        let this = self.clone_ref_disabled_usage_tracking();
         this.into_split_impl()
     }
 }
@@ -1816,47 +1409,45 @@ where 't: 'y {
 
 #[macro_export]
 macro_rules! partial {
-    (& $($lt:lifetime)? mut $expr:expr) => { & $($lt)? mut $expr.partial_borrow() };
+    (&mut $expr:expr) => { $expr.partial_borrow() };
 
     // & 'glt < fs... > Ctx < ps... >
-    (& $glt:lifetime < $($ts:tt)*) => { $crate::partial! { @1 $glt [] $($ts)* } };
-    (&               < $($ts:tt)*) => { $crate::partial! { @1 '_   [] $($ts)* } };
-    (                < $($ts:tt)*) => { $crate::partial! { @1 NONE [] $($ts)* } };
+    (& $def_lt:lifetime < $($ts:tt)*) => { $crate::partial! { @2 $def_lt [] $($ts)* } };
+    (&                  < $($ts:tt)*) => { $crate::partial! { @2 '_      [] $($ts)* } };
 
-    // 'def_lt, fs...> Ctx <...>
-    (@1 $glt:tt $fs:tt $def_lt:lifetime , $($ts:tt)*) => { $crate::partial! { @2 $glt $def_lt $fs $($ts)* } };
-    (@1 $glt:tt $fs:tt                        $($ts:tt)*) => { $crate::partial! { @2 $glt '_      $fs $($ts)* } };
+    // // 'def_lt, fs...> Ctx <...>
+    // (@1 $fs:tt $def_lt:lifetime , $($ts:tt)*) => { $crate::partial! { @2 $def_lt $fs $($ts)* } };
+    // (@1 $fs:tt                        $($ts:tt)*) => { $crate::partial! { @2 '_      $fs $($ts)* } };
 
     // fs ...> Ctx <...>
-    (@2 $glt:tt $def_lt:tt $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @3 $glt $def_lt $n $fs          $($ts)* } };
-    (@2 $glt:tt $def_lt:tt [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::partial! { @2 $glt $def_lt    [$($fs)* $f] $($ts)* } };
+    (@2 $def_lt:tt $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @3 $def_lt $n $fs          $($ts)* } };
+    (@2 $def_lt:tt [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::partial! { @2 $def_lt    [$($fs)* $f] $($ts)* } };
 
     // Ctx <...>
-    (@3 $glt:tt $def_lt:tt $n:ident $fs:tt)              => { $crate::partial! { @5 $glt $def_lt $n $fs [] } };
-    (@3 $glt:tt $def_lt:tt $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @4 $glt $def_lt $n $fs [] $($ts)* } };
+    (@3 $def_lt:tt $n:ident $fs:tt)              => { $crate::partial! { @5 $def_lt $n $fs [] } };
+    (@3 $def_lt:tt $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @4 $def_lt $n $fs [] $($ts)* } };
 
     // <...>
-    (@4 $glt:tt $def_lt:tt $n:ident $fs:tt $ps:tt >)                      => { $crate::partial! { @5 $glt $def_lt $n $fs $ps                   } };
-    (@4 $glt:tt $def_lt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::partial! { @4 $glt $def_lt $n $fs [$($ps)* $p]  $($ts)* } };
+    (@4 $def_lt:tt $n:ident $fs:tt $ps:tt >)                      => { $crate::partial! { @5 $def_lt $n $fs $ps                   } };
+    (@4 $def_lt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::partial! { @4 $def_lt $n $fs [$($ps)* $p]  $($ts)* } };
 
     // Production
-    (@5 $glt:tt $def_lt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial! { @6 $glt $def_lt $n $fs [$($ps)*] $crate::FieldsAsHidden<$n<$($ps)*>> } };
+    (@5 $def_lt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial! { @6 $def_lt $n $fs [$($ps)*] $crate::FieldsAsHidden<$n<$($ps)*>> } };
 
-    (@6 $glt:tt $def_lt:tt $n:ident [, $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
-        $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $($ts)* }
+    (@6 $def_lt:tt $n:ident [, $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
+        $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $($ts)* }
     };
 
-    (@6 $glt:tt $def_lt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$lt,     $n<$($ps)*>> } };
-    (@6 $glt:tt $def_lt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$def_lt, $n<$($ps)*>> } };
-    (@6 $glt:tt $def_lt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$lt,     $n<$($ps)*>> } };
-    (@6 $glt:tt $def_lt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$def_lt, $n<$($ps)*>> } };
-    (@6 $glt:tt $def_lt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,     $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@6 $glt:tt $def_lt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$def_lt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@6 $glt:tt $def_lt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,     $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@6 $glt:tt $def_lt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $glt $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$def_lt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@6 $def_lt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$lt,     $n<$($ps)*>> } };
+    (@6 $def_lt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$def_lt, $n<$($ps)*>> } };
+    (@6 $def_lt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$lt,     $n<$($ps)*>> } };
+    (@6 $def_lt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$def_lt, $n<$($ps)*>> } };
+    (@6 $def_lt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,     $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@6 $def_lt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$def_lt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@6 $def_lt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,     $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
+    (@6 $def_lt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$def_lt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
 
-    (@6 NONE    $def_lt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => {            $crate::ExplicitParams<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
-    (@6 $glt:tt $def_lt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { & $glt mut $crate::ExplicitParams<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
+    (@6 $def_lt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { $crate::ExplicitParams<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
 }
 
 // ===============
@@ -1880,29 +1471,29 @@ pub trait SplitHelper<'s> {
     where Self: Partial<'s, Target> {
         self.split_impl()
     }
+
+    #[track_caller]
+    #[inline(always)]
+    fn into_split<Target>(self) -> (Target, Self::Rest)
+    where Self: IntoPartial<Target> {
+        self.into_split_impl()
+    }
 }
 impl<'t, T> SplitHelper<'t> for T {}
 
 pub trait PartialHelper<'s> {
     #[track_caller]
     #[inline(always)]
-    fn partial_borrow_or_eq<Target>(&'s mut self) -> Target
+    fn partial_borrow<Target>(&'s mut self) -> Target
     where Self: Partial<'s, Target> {
         self.split_impl().0
     }
 
     #[track_caller]
     #[inline(always)]
-    fn into_partial_borrow_or_eq<Target>(self) -> Target
+    fn into_partial_borrow<Target>(self) -> Target
     where Self: Sized + IntoPartial<Target> {
         self.into_split_impl().0
-    }
-
-    #[track_caller]
-    #[inline(always)]
-    fn partial_borrow<Target>(&'s mut self) -> Target
-    where Self: Partial<'s, Target> + NotEq<Target> {
-        self.partial_borrow_or_eq()
     }
 }
 impl<'t, T> PartialHelper<'t> for T {}
@@ -1952,11 +1543,11 @@ mod sandbox {
         }
     }
 
-    impl<'s, Args, T> borrow::CloneMut<'s> for ExplicitParams<Args, T>
-    where T: borrow::CloneMut<'s> {
-        type Cloned = ExplicitParams<Args, borrow::Cloned<'s, T>>;
-        fn clone_mut(&'s mut self) -> Self::Cloned {
-            ExplicitParams::new(self.value.clone_mut())
+    impl<'s, Args, T> borrow::CloneRef<'s> for ExplicitParams<Args, T>
+    where T: borrow::CloneRef<'s> {
+        type Cloned = ExplicitParams<Args, borrow::ClonedRef<'s, T>>;
+        fn clone_ref_disabled_usage_tracking(&'s mut self) -> Self::Cloned {
+            ExplicitParams::new(self.value.clone_ref_disabled_usage_tracking())
         }
     }
 }
@@ -1977,23 +1568,23 @@ pub fn test() {
         // scene: SceneCtx {},
     };
 
-    // ctx_ref_mut.disable_field_usage_tracking_shallow();
+    // ctx_ref_mut.disable_field_usage_tracking();
 
     // test2(&mut ctx_ref_mut.partial_borrow_or_eq());
     test2(p!(&mut ctx));
 
 
-    // pub trait CloneMut<'s> {
+    // pub trait CloneRef<'s> {
     //     type Cloned;
     //     fn clone_mut(this: &'s mut Self) -> Self::Cloned;
     // }
-    // type Cloned<'s, T> = <T as CloneMut<'s>>::Cloned;
+    // type Cloned<'s, T> = <T as CloneRef<'s>>::Cloned;
 
 
 
 }
 
-fn test2<'s, 't>(ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
+fn test2<'s, 't>(mut ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
     {
         // let _y = ctx.extract_geometry();
         // let _y = ctx.extract_version();
@@ -2003,7 +1594,7 @@ fn test2<'s, 't>(ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
     }
     println!(">>>");
     test5(p!(&mut ctx));
-    test6(ctx);
+    test6(p!(&mut ctx));
     // test6(ctx);
     println!("<<<");
     // &*ctx.scene;
@@ -2011,7 +1602,7 @@ fn test2<'s, 't>(ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
 }
 
 fn test5<'t>(_ctx: p!(&<geometry>Ctx<'_, usize>)) {
-    // &*_ctx.geometry;
+    &*_ctx.geometry;
     println!("yo")
 }
 

@@ -51,7 +51,7 @@ trait GraphDetachAllNodes {
 }
 
 impl GraphDetachAllNodes for p!(&<mut *> Graph) {
-    fn detach_all_nodes(self) {
+    fn detach_all_nodes(mut self) {
         let (nodes, mut self2) = self.extract_nodes();
         for node in nodes {
             // Partial self-borrowing occurs here.
@@ -65,7 +65,7 @@ trait GraphDetachNode {
 }
 
 impl GraphDetachNode for p!(&<mut edges> Graph) {
-    fn detach_node(self, node: &mut Node) {
+    fn detach_node(mut self, node: &mut Node) {
         for edge_id in std::mem::take(&mut node.outputs) {
             self.edges[edge_id].from = None;
         }

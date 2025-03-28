@@ -240,21 +240,6 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
     out.push(meta_derive(input_raw.clone()).into());
 
-    // Generates:
-    //
-    // ```
-    // impl<'t, T, __Args, __T> borrow::NotEq<borrow::ExplicitParams<__Args, __T>> for Ctx<'t, T>
-    // where T: Debug {}
-    // }
-    // ```
-    out.push(
-        quote! {
-            impl<#params __Args, __T> borrow::NotEq<borrow::ExplicitParams<__Args, __T>>
-            for #ident<#params>
-            where #bounds {}
-        }
-    );
-
     // === CtxRef 1 ===
 
     let ref_ident = Ident::new(&format!("{ident}Ref"), ident.span());
@@ -306,50 +291,50 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
     // Generates:
     //
-    // impl<'__s__, __S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::CloneMut<'__s__>
+    // impl<'__s__, __S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::CloneRef<'__s__>
     // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
     // where
-    //     borrow::Field<__Version>: borrow::FieldClone<'__s__>,
-    //     borrow::Field<__Geometry>: borrow::FieldClone<'__s__>,
-    //     borrow::Field<__Material>: borrow::FieldClone<'__s__>,
-    //     borrow::Field<__Mesh>: borrow::FieldClone<'__s__>,
-    //     borrow::Field<__Scene>: borrow::FieldClone<'__s__>,
+    //     borrow::Field<__Version>: borrow::CloneField<'__s__>,
+    //     borrow::Field<__Geometry>: borrow::CloneField<'__s__>,
+    //     borrow::Field<__Material>: borrow::CloneField<'__s__>,
+    //     borrow::Field<__Mesh>: borrow::CloneField<'__s__>,
+    //     borrow::Field<__Scene>: borrow::CloneField<'__s__>,
     // {
     //     type Cloned = CtxRef<
     //         __S__,
-    //         borrow::FieldCloned<'__s__, borrow::Field<__Version>>,
-    //         borrow::FieldCloned<'__s__, borrow::Field<__Geometry>>,
-    //         borrow::FieldCloned<'__s__, borrow::Field<__Material>>,
-    //         borrow::FieldCloned<'__s__, borrow::Field<__Mesh>>,
-    //         borrow::FieldCloned<'__s__, borrow::Field<__Scene>>
+    //         borrow::ClonedField<'__s__, borrow::Field<__Version>>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Geometry>>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Material>>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Mesh>>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Scene>>
     //     >;
-    //     fn clone_mut(&'__s__ mut self) -> Self::Cloned {
-    //         use borrow::FieldClone;
+    //     fn clone_ref_disabled_usage_tracking(&'__s__ mut self) -> Self::Cloned {
+    //         use borrow::CloneField;
     //         CtxRef {
-    //             version: self.version.field_clone(),
-    //             geometry: self.geometry.field_clone(),
-    //             material: self.material.field_clone(),
-    //             mesh: self.mesh.field_clone(),
-    //             scene: self.scene.field_clone(),
+    //             version: self.version.clone_field_disabled_usage_tracking(),
+    //             geometry: self.geometry.clone_field_disabled_usage_tracking(),
+    //             material: self.material.clone_field_disabled_usage_tracking(),
+    //             mesh: self.mesh.clone_field_disabled_usage_tracking(),
+    //             scene: self.scene.clone_field_disabled_usage_tracking(),
     //             marker: std::marker::PhantomData,
     //         }
     //     }
     // }
     out.push(
         quote! {
-            impl<'__s__, __S__, #(#fields_param,)*> borrow::CloneMut<'__s__>
+            impl<'__s__, __S__, #(#fields_param,)*> borrow::CloneRef<'__s__>
             for #ref_ident<__S__, #(#fields_param,)*>
             where
-                #(borrow::Field<#fields_param>: borrow::FieldClone<'__s__>,)*
+                #(borrow::Field<#fields_param>: borrow::CloneField<'__s__>,)*
             {
                 type Cloned = #ref_ident<
                     __S__,
-                    #(borrow::FieldCloned<'__s__, borrow::Field<#fields_param>>,)*
+                    #(borrow::ClonedField<'__s__, borrow::Field<#fields_param>>,)*
                 >;
-                fn clone_mut(&'__s__ mut self) -> Self::Cloned {
-                    use borrow::FieldClone;
+                fn clone_ref_disabled_usage_tracking(&'__s__ mut self) -> Self::Cloned {
+                    use borrow::CloneField;
                     #ref_ident {
-                        #(#fields_ident: self.#fields_ident.field_clone(),)*
+                        #(#fields_ident: self.#fields_ident.clone_field_disabled_usage_tracking(),)*
                         marker: std::marker::PhantomData,
                     }
                 }
@@ -543,8 +528,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // where
     //     T: Debug,
     //     (GeometryCtx): '__tgt,
-    //     Self: borrow::CloneMut<'__s>,
-    //     borrow::Cloned<'__s, Self>: borrow::IntoPartial<
+    //     Self: borrow::CloneRef<'__s>,
+    //     borrow::ClonedRef<'__s, Self>: borrow::IntoPartial<
     //         borrow::ExplicitParams<
     //             Ctx<'t, T>,
     //             CtxRef<
@@ -563,7 +548,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //     pub fn extract_geometry(&'__s mut self) -> (
     //         borrow::Field<&'__tgt mut GeometryCtx>,
     //
-    //             <borrow::Cloned<'__s, Self> as borrow::IntoPartial<
+    //             <borrow::ClonedRef<'__s, Self> as borrow::IntoPartial<
     //                 borrow::ExplicitParams<
     //                     Ctx<'t, T>,
     //                     CtxRef<
@@ -577,7 +562,9 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //                 >
     //             >>::Rest
     //     ) {
-    //         let split = borrow::IntoPartial::into_split_impl(borrow::CloneMut::clone_mut(self));
+    //         let split = borrow::IntoPartial::into_split_impl(
+    //             borrow::CloneRef::clone_ref_disabled_usage_tracking(self)
+    //         );
     //         (split.0.value.#field_ident, split.1)
     //     }
     // }
@@ -606,8 +593,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             where
                 #bounds
                 #field_ty: '__tgt,
-                Self: borrow::CloneMut<'__s>,
-                borrow::Cloned<'__s, Self>: borrow::IntoPartial<
+                Self: borrow::CloneRef<'__s>,
+                borrow::ClonedRef<'__s, Self>: borrow::IntoPartial<
                     borrow::ExplicitParams<
                         #ident<#params>,
                         #ref_ident<
@@ -621,7 +608,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 #[inline(always)]
                 pub fn #fn_ident(&'__s mut self) -> (
                     borrow::Field<#field_ref_mut>,
-                        <borrow::Cloned<'__s, Self> as borrow::IntoPartial<
+                        <borrow::ClonedRef<'__s, Self> as borrow::IntoPartial<
                             borrow::ExplicitParams<
                                 #ident<#params>,
                                 #ref_ident<
@@ -631,7 +618,9 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                             >
                         >>::Rest
                 ) {
-                    let split = borrow::IntoPartial::into_split_impl(borrow::CloneMut::clone_mut(self));
+                    let split = borrow::IntoPartial::into_split_impl(
+                        borrow::CloneRef::clone_ref_disabled_usage_tracking(self)
+                    );
                     (split.0.value.#field_ident, split.1)
                 }
             }
@@ -645,21 +634,12 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::HasUsageTrackedFields
     // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
     //     #[inline(always)]
-    //     fn mark_all_fields_as_used(&self) {
-    //         self.version.mark_as_used();
-    //         self.geometry.mark_as_used();
-    //         self.material.mark_as_used();
-    //         self.mesh.mark_as_used();
-    //         self.scene.mark_as_used();
-    //     }
-    //
-    //     #[inline(always)]
-    //     fn disable_field_usage_tracking_shallow(&self) {
-    //         self.version.disable_usage_tracking_shallow();
-    //         self.geometry.disable_usage_tracking_shallow();
-    //         self.material.disable_usage_tracking_shallow();
-    //         self.mesh.disable_usage_tracking_shallow();
-    //         self.scene.disable_usage_tracking_shallow();
+    //     fn disable_field_usage_tracking(&self) {
+    //         self.version.disable_usage_tracking();
+    //         self.geometry.disable_usage_tracking();
+    //         self.material.disable_usage_tracking();
+    //         self.mesh.disable_usage_tracking();
+    //         self.scene.disable_usage_tracking();
     //     }
     // }
     // ```
@@ -667,13 +647,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
         impl<__S__, #(#fields_param,)*> borrow::HasUsageTrackedFields
         for #ref_ident<__S__, #(#fields_param,)*> {
             #[inline(always)]
-            fn mark_all_fields_as_used(&self) {
-                #(self.#fields_ident.mark_as_used();)*
-            }
-
-            #[inline(always)]
-            fn disable_field_usage_tracking_shallow(&self) {
-                #(self.#fields_ident.disable_usage_tracking_shallow();)*
+            fn disable_field_usage_tracking(&self) {
+                #(self.#fields_ident.disable_usage_tracking();)*
             }
         }
     });
@@ -698,7 +673,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //             scene:    borrow::Field::new("scene", &mut self.scene),
     //             marker:   std::marker::PhantomData,
     //         };
-    //         borrow::HasUsageTrackedFields::disable_field_usage_tracking_shallow(&struct_ref);
+    //         borrow::HasUsageTrackedFields::disable_field_usage_tracking(&struct_ref);
     //         borrow::ExplicitParams::new(struct_ref)
     //     }
     // }
@@ -722,7 +697,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                     )*
                     marker: std::marker::PhantomData,
                 };
-                borrow::HasUsageTrackedFields::disable_field_usage_tracking_shallow(&struct_ref);
+                borrow::HasUsageTrackedFields::disable_field_usage_tracking(&struct_ref);
                 borrow::ExplicitParams::new(struct_ref)
             }
         }
