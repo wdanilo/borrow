@@ -855,21 +855,22 @@ pub mod doc;
 pub mod hlist;
 pub mod reflect;
 
-use std::fmt::Debug;
-
 pub use reflect::*;
 pub use borrow_macro::*;
 pub use tstr::TS as Str;
 
-use hlist::ItemAt;
-use hlist::SetItemAtResult;
-
-use std::marker::PhantomData;
+use hlist::*;
 
 use std::cell::Cell;
+use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::Arc;
+
+// ==============
+// === Traits ===
+// ==============
 
 pub mod traits {
     pub use super::Partial as _;
