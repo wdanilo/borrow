@@ -4,7 +4,7 @@
 
 use std::fmt::Debug;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields};
+use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Type};
 use itertools::Itertools;
 use proc_macro2::TokenStream;
 
@@ -709,4 +709,162 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
     // println!("OUTPUT:\n{}", output);
     output.into()
+}
+
+use syn::Token;
+use syn::parse::Parse;
+use syn::parse::ParseStream;
+use syn::token::Token;
+
+#[derive(Debug)]
+enum Selector {
+    Ident { lifetime: Option<TokenStream>, is_mut: bool, ident: Ident },
+    Star { lifetime: Option<TokenStream>, is_mut: bool }
+}
+
+enum Selectors {
+    List(Vec<Selector>),
+    All
+}
+
+impl Selectors {
+    fn is_all(&self) -> bool {
+        matches!(self, Selectors::All)
+    }
+}
+
+// #[derive(Debug)]
+struct MyInput {
+    lifetime: Option<TokenStream>,
+    selectors: Selectors,
+    target: Type,
+}
+
+fn parse_angled_list<T: Parse>(input: ParseStream) -> syn::Result<Vec<T>> {
+    let mut params = vec![];
+
+    while !input.peek(Token![>]) {
+        if let Ok(value) = input.parse::<T>() {
+            params.push(value);
+        } else {
+            break
+        }
+
+        if input.peek(Token![>]) {
+            break;
+        }
+
+        input.parse::<Token![,]>().ok();
+    }
+
+    Ok(params)
+}
+
+
+impl Parse for Selector {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let lifetime = input.parse::<syn::Lifetime>().ok().map(|t| quote! { #t });
+        let is_mut = input.parse::<Token![mut]>().is_ok();
+        if input.parse::<Token![*]>().is_ok() {
+            Ok(Selector::Star{ lifetime, is_mut })
+        } else {
+            let ident: Ident = input.parse()?;
+            Ok(Selector::Ident{ lifetime, is_mut, ident })
+        }
+    }
+}
+
+impl Parse for MyInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.parse::<Token![&]>()?;
+
+        let lifetime = input.parse::<syn::Lifetime>().ok().map(|t| quote! { #t });
+
+        let selectors = if input.parse::<Token![mut]>().is_ok() {
+            Selectors::All
+        } else if input.parse::<Token![<]>().is_ok() {
+            let selectors = parse_angled_list::<Selector>(input)?;
+            input.parse::<Token![>]>()?;
+            Selectors::List(selectors)
+        } else {
+            Selectors::List(vec![])
+        };
+
+        let target: Type = input.parse()?;
+
+        Ok(MyInput {
+            lifetime,
+            selectors,
+            target,
+        })
+    }
+}
+
+#[allow(clippy::cognitive_complexity)]
+#[proc_macro]
+pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input_raw as MyInput);
+
+    let target_ident = match &input.target {
+        Type::Path(type_path) if type_path.path.segments.len() == 1 && input.selectors.is_all() => {
+            let ident = &type_path.path.segments[0].ident;
+            let is_lower = ident.to_string().chars().next().map(|c| c.is_lowercase()).unwrap_or(false);
+            is_lower.then_some(&type_path.path.segments[0].ident)
+        }
+        _ => None,
+    };
+
+    let out = if let Some(target_ident) = target_ident {
+        quote! {
+            #target_ident.partial_borrow()
+        }
+    } else {
+        let target = &input.target;
+        let default_lifetime = input.lifetime.unwrap_or_else(|| quote!{ '_ });
+        let mut out = quote! { borrow::FieldsAsHidden<#target> };
+        match &input.selectors {
+            Selectors::All => out = quote! {
+                borrow::FieldsAsMut <#default_lifetime, #target>
+            },
+            Selectors::List(selectors) => {
+                for selector in selectors {
+                    out = match selector {
+                        Selector::Ident { lifetime, is_mut, ident } => {
+                            let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
+                            if *is_mut {
+                                quote! { borrow::SetFieldAsMut <#lt, #target, borrow::Str!(#ident), #out>   }
+                            } else {
+                                quote! { borrow::SetFieldAsRef <#lt, #target, borrow::Str!(#ident), #out>   }
+                            }
+                        }
+                        Selector::Star { lifetime, is_mut } => {
+                            let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
+                            if *is_mut {
+                                quote! { borrow::FieldsAsMut <#lt, #target>   }
+                            } else {
+                                quote! { borrow::FieldsAsRef <#lt, #target>   }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+        out = quote! {
+            borrow::ExplicitParams<
+                #target,
+                borrow::RefWithFields< #target, #out >
+            >
+        };
+        out
+    };
+
+
+    // println!("{}", out);
+
+    // let out = quote! {
+    //
+    // };
+    out.into()
 }

@@ -28,7 +28,7 @@
 //!
 //! We opt for the latter approach and create a root registry called `Ctx`:
 //!
-//! ```ignore
+//! ```
 //! // === Data ===
 //! pub struct Geometry { /* ... */ }
 //! pub struct Material { /* ... */ }
@@ -100,7 +100,7 @@
 //!
 //! Passing each field separately compiles, but becomes cumbersome and error-prone as the number of fields grows:
 //!
-//! ```ignore
+//! ```
 //! # // === Data ===
 //! # pub struct Geometry { /* ... */ }
 //! # pub struct Material { /* ... */ }
@@ -178,7 +178,7 @@
 //! # 🤩 Partial borrows for the rescue!
 //! This crate provides the `partial` macro, which we recommend importing under a shorter alias for concise syntax:
 //!
-//! ```ignore
+//! ```
 //! // === Data ===
 //! # pub struct Geometry { /* ... */ }
 //! # pub struct Material { /* ... */ }
@@ -217,7 +217,7 @@
 //! extended with utilities for increased expressiveness. Please refer to this [crate documentation to learn about the syntax](crate#-borrowpartial-p-macro).
 //! Let's apply these concepts to our rendering engine example:
 //!
-//! ```ignore
+//! ```
 //! # // === Data ===
 //! # pub struct Geometry { /* ... */ }
 //! # pub struct Material { /* ... */ }
@@ -247,8 +247,8 @@
 //! #     pub scene: SceneCtx,
 //! # }
 //! #
-//! fn render_pass1(ctx: p!(&<mut *> Ctx)) {
-//!     let (scene, ctx2) = ctx.extract_scene();
+//! fn render_pass1(mut ctx: p!(&<mut *> Ctx)) {
+//!     let (scene, mut ctx2) = ctx.extract_scene();
 //!     for scene in &scene.data {
 //!         for mesh in &scene.meshes {
 //!             render_scene(ctx2.partial_borrow(), *mesh)

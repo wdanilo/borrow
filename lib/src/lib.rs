@@ -172,21 +172,6 @@
 //! and is used to provide diagnostics about unused borrowed fields, which is described later in
 //! this doc.
 //!
-//! <sub></sub>
-//!
-//! <div class="warning">
-//!
-//! Please note the usage of the `#[module(...)]` attribute, which specifies the path to the module
-//! where the macro is invoked. This attribute is necessary because Rust does not allow procedural
-//! macros to automatically detect the path of the module they are used in.
-//!
-//! If you intend to use the generated macro from another crate, avoid using the `crate::` prefix
-//! in the `#[module(...)]` attribute. Instead, refer to your current crate by its name, for
-//! example: `#[module(my_crate::data)]` and add `extern crate self as my_crate;` to your `lib.rs`
-//! / `main.rs`.
-//!
-//! </div>
-//!
 //! <br/>
 //! <br/>
 //!
@@ -196,7 +181,7 @@
 //! alias `p` for concise syntax. The macro allows you to parameterize borrows similarly to how you
 //! parameterize types. Let's see how the macro expansion works:
 //!
-//! ```ignore
+//! ```
 //! // Given:
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
@@ -219,14 +204,12 @@
 //! fn test1(graph: p!(&<nodes, mut edges> Graph)) {}
 //!
 //! // It will expand to:
-//! fn test2(graph: &mut p!(<nodes, mut edges> Graph)) {}
-//!
-//! // Which will expand to:
 //! fn test3(
-//!     graph: &mut GraphRef<
+//!     graph: GraphRef<
+//!         Graph,
 //!         &Vec<Node>,
 //!         &mut Vec<Edge>,
-//!         Hidden<Vec<Group>>
+//!         Hidden,
 //!     >
 //! ) {}
 //! ```
@@ -239,10 +222,10 @@
 //!
 //! <sub></sub>
 //!
-//! 1. **Field References**
+//! 1. **Field References**<br/>
 //!    You can parameterize a reference by providing field names this reference should contain.
 //!
-//!    ```ignore
+//!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::Hidden;
@@ -269,11 +252,10 @@
 //!
 //!    <sub></sub>
 //!
-//! 2. **Field Selectors**
-//!    You can use `*` to include all fields and `!` to exclude fields. Later selectors override
-//!    previous ones.
+//! 2. **Field Selectors**<br/>
+//!    You can use `*` to include all. Later selectors override previous ones.
 //!
-//!    ```ignore
+//!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::Hidden;
@@ -293,18 +275,18 @@
 //!    # fn main() {}
 //!    #
 //!    // Contains:
-//!    // 1. Mutable references to all, but 'edges' and 'groups' fields.
+//!    // 1. Mutable references to all, but the 'edges' field.
 //!    // 2. Immutable reference to the 'edges' field.
-//!    fn test(graph: p!(&<mut *, edges, !groups> Graph)) { /* ... */ }
+//!    fn test(graph: p!(&<mut *, edges> Graph)) { /* ... */ }
 //!    ```
 //!
 //!    <sub></sub>
 //!
-//! 3. **Lifetime Annotations**
+//! 3. **Lifetime Annotations**<br/>
 //!    You can specify lifetimes for each reference. If a lifetime is not provided, it defaults to
-//!    `'_`. You can override the default lifetime (`'_`) by providing it as the first argument.
+//!    `'_`. You can override the default lifetime by providing it after the `&` symbol.
 //!
-//!    ```ignore
+//!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::Hidden;
@@ -324,18 +306,15 @@
 //!    # fn main() {}
 //!    #
 //!    // Contains:
-//!    // 1. References with the 'b lifetime to all but the 'mesh' fields.
-//!    // 2. Reference with the 'c lifetime to the 'edges' field.
-//!    //
-//!    // Due to explicit partial reference lifetime 'a, the inferred
-//!    // lifetime dependencies are 'a:'b and 'a:'c.
-//!    fn test<'a, 'b, 'c>(graph: p!(&'a <'b *, 'c edges>Graph)) { /* ... */ }
+//!    // 1. References with the 'a lifetime to all but the 'mesh' fields.
+//!    // 2. Reference with the 'b lifetime to the 'edges' field.
+//!    fn test<'a, 'b>(graph: p!(&<'a *, 'b edges>Graph)) { /* ... */ }
 //!
 //!    // Contains:
 //!    // 1. Reference with the 't lifetime to the 'nodes' field.
 //!    // 2. Reference with the 't lifetime to the 'edges' field.
 //!    // 3. Reference with the 'm lifetime to the 'groups' field.
-//!    type PathFind<'t, 'm> = p!(<'t, nodes, edges, 'm groups> Graph);
+//!    type PathFind<'t, 'm> = p!(&'t<nodes, edges, 'm groups> Graph);
 //!    ```
 //!
 //! <br/>
@@ -345,12 +324,16 @@
 //!
 //! The `borrow::Partial` derive macro also generates the `partial_borrow`, `split`, and an
 //! extraction method per struct field. These methods let you transform one partial borrow
-//! into another:
+//! into another. Please note that the `p!` macro can be also used as a shorthand for the
+//! `partial_borrow` method.
 //!
 //! <sub></sub>
 //!
-//! - `partial_borrow` lets you borrow only the fields required by the target type.
-//!    ```ignore
+//! - `partial_borrow` lets you borrow only the fields required by the target type. Please note that
+//!    you do not have to use the `as_refs_mut` method to get a partial borrow of a struct. You can
+//!    use `partial_borrow` instead, which will automatically use `as_refs_mut` under the hood and
+//!    then borrow the requested fields only.
+//!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::traits::*;
@@ -359,7 +342,7 @@
 //!    # struct Edge;
 //!    # struct Group;
 //!    #
-//!    # #[derive(borrow::Partial)]
+//!    # #[derive(borrow::Partial, Default)]
 //!    # #[module(crate)]
 //!    # struct Graph {
 //!    #   pub nodes:  Vec<Node>,
@@ -367,17 +350,41 @@
 //!    #   pub groups: Vec<Group>,
 //!    # }
 //!    #
-//!    # fn main() {}
-//!    #
-//!    fn test(graph: p!(&<mut *> Graph)) {
-//!        let graph2 = graph.partial_borrow::<p!(<mut nodes> Graph)>();
+//!    fn main() {
+//!        let mut graph = Graph::default();
+//!        // Creating a partial borrow (recommended way):
+//!        test(p!(&mut graph));
+//!
+//!        // Which desugars to:
+//!        test(graph.partial_borrow());
+//!
+//!        // Which is the same as:
+//!        test(graph.as_refs_mut());
 //!    }
+//!
+//!    fn test(mut graph: p!(&<mut *> Graph)) {
+//!        // Creating a partial borrow of the current borrow (recommended way):
+//!        test2(p!(&mut graph));
+//!
+//!        // The above is the same as the following:
+//!        test2(graph.partial_borrow());
+//!
+//!        // Which is the same as the most explicit version:
+//!        let graph2 = graph.partial_borrow::<p!(&<mut nodes> Graph)>();
+//!        test2(graph2);
+//!    }
+//!
+//!    fn test2(graph: p!(&<mut nodes> Graph)) {
+//!        // ...
+//!        # let _ = graph;
+//!    }
+//!
 //!    ```
 //!
 //!    <sub></sub>
 //!
 //! - `split` is like `partial_borrow` but also returns a borrow of the remaining fields.
-//!    ```ignore
+//!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    # use borrow::traits::*;
@@ -396,17 +403,16 @@
 //!    #
 //!    # fn main() {}
 //!    #
-//!    fn test(graph: p!(&<mut *> Graph)) {
-//!        // The inferred type of `graph3` is `p!(&<mut *, !nodes> Graph)`,
-//!        // which expands to `p!(&<mut edges, mut groups> Graph)`
-//!        let (graph2, graph3) = graph.split::<p!(<mut nodes> Graph)>();
+//!    fn test(mut graph: p!(&<mut *> Graph)) {
+//!        // The inferred type of `graph3` is `p!(&<mut edges, mut groups> Graph)`.
+//!        let (graph2, graph3) = graph.split::<p!(&<mut nodes> Graph)>();
 //!    }
 //!    ```
 //!
 //!    <sub></sub>
 //!
 //! - `extract_$field` is like split, but for single field only.
-//!    ```ignore
+//!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
 //!    #
@@ -424,9 +430,9 @@
 //!    #
 //!    # fn main() {}
 //!    #
-//!    fn test(graph: p!(&<mut *> Graph)) {
-//!        // The inferred type of `nodes` is `p!(&<mut nodes> Graph)`.
-//!        // The inferred type of `graph2` is `p!(&<mut *, !nodes> Graph)`.
+//!    fn test(mut graph: p!(&<mut *> Graph)) {
+//!        // Type of `nodes` is `p!(&<mut nodes> Graph)`.
+//!        // Type of `graph2` is `p!(&<mut edges, mut groups> Graph)`.
 //!        let (nodes, graph2) = graph.extract_nodes();
 //!    }
 //!    ```
@@ -439,7 +445,7 @@
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
 //!
-//! ```ignore
+//! ```
 //! use std::vec::Vec;
 //! use borrow::partial as p;
 //! use borrow::traits::*;
@@ -471,7 +477,7 @@
 //!
 //! </details>
 //!
-//! ```ignore
+//! ```
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
 //! # use borrow::traits::*;
@@ -517,7 +523,7 @@
 //! // =============
 //!
 //! // Requires mutable access to the `graph.edges` field.
-//! fn detach_node(graph: p!(&<mut edges> Graph), node: &mut Node) {
+//! fn detach_node(mut graph: p!(&<mut edges> Graph), node: &mut Node) {
 //!     for edge_id in std::mem::take(&mut node.outputs) {
 //!         graph.edges[edge_id].from = None;
 //!     }
@@ -527,10 +533,10 @@
 //! }
 //!
 //! // Requires mutable access to all `graph` fields.
-//! fn detach_all_nodes(graph: p!(&<mut *> Graph)) {
+//! fn detach_all_nodes(mut graph: p!(&<mut *> Graph)) {
 //!     // Extract the `nodes` field.
 //!     // The `graph2` variable has a type of `p!(&<mut *, !nodes> Graph)`.
-//!     let (nodes, graph2) = graph.extract_nodes();
+//!     let (nodes, mut graph2) = graph.extract_nodes();
 //!     for node in nodes {
 //!         detach_node(graph2.partial_borrow(), node);
 //!     }
@@ -557,7 +563,7 @@
 //!         groups: vec![]
 //!     };
 //!
-//!     detach_all_nodes(&mut graph.as_refs_mut());
+//!     detach_all_nodes(graph.partial_borrow());
 //!
 //!     for node in &graph.nodes {
 //!         assert!(node.outputs.is_empty());
@@ -581,7 +587,7 @@
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
 //!
-//! ```ignore
+//! ```
 //! use std::vec::Vec;
 //! use borrow::partial as p;
 //! use borrow::traits::*;
@@ -627,7 +633,7 @@
 //!
 //! </details>
 //!
-//! ```ignore
+//! ```
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
 //! # use borrow::traits::*;
@@ -670,16 +676,22 @@
 //! #
 //! # fn main() {}
 //! #
-//! impl p!(<mut edges, mut nodes> Graph) {
+//! trait GraphDetachAllNodes {
+//!     fn detach_all_nodes(&mut self);
+//! }
+//! impl GraphDetachAllNodes for p!(&<mut edges, mut nodes> Graph) {
 //!     fn detach_all_nodes(&mut self) {
-//!         let (nodes, self2) = self.extract_nodes();
+//!         let (nodes, mut self2) = self.extract_nodes();
 //!         for node in nodes {
 //!             self2.detach_node(node);
 //!         }
 //!     }
 //! }
 //!
-//! impl p!(<mut edges> Graph) {
+//! trait GraphDetachNode {
+//!     fn detach_node(&mut self, node: &mut Node);
+//! }
+//! impl GraphDetachNode for p!(&<mut edges> Graph) {
 //!     fn detach_node(&mut self, node: &mut Node) {
 //!         for edge_id in std::mem::take(&mut node.outputs) {
 //!             self.edges[edge_id].from = None;
@@ -695,7 +707,7 @@
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
 //!
-//! ```ignore
+//! ```
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
 //! # use borrow::traits::*;
@@ -736,16 +748,22 @@
 //! #    groups: Vec<Group>,
 //! # }
 //! #
-//! # impl p!(<mut edges, mut nodes> Graph) {
+//! # trait GraphDetachAllNodes {
+//! #     fn detach_all_nodes(&mut self);
+//! # }
+//! # impl GraphDetachAllNodes for p!(&<mut edges, mut nodes> Graph) {
 //! #     fn detach_all_nodes(&mut self) {
-//! #         let (nodes, self2) = self.extract_nodes();
+//! #         let (nodes, mut self2) = self.extract_nodes();
 //! #         for node in nodes {
 //! #             self2.detach_node(node);
 //! #         }
 //! #     }
 //! # }
 //! #
-//! # impl p!(<mut edges> Graph) {
+//! # trait GraphDetachNode {
+//! #     fn detach_node(&mut self, node: &mut Node);
+//! # }
+//! # impl GraphDetachNode for p!(&<mut edges> Graph) {
 //! #     fn detach_node(&mut self, node: &mut Node) {
 //! #         for edge_id in std::mem::take(&mut node.outputs) {
 //! #             self.edges[edge_id].from = None;
@@ -777,7 +795,7 @@
 //!       groups: vec![],
 //!    };
 //!
-//!    graph.as_refs_mut().partial_borrow().detach_all_nodes();
+//!    p!(&mut graph).detach_all_nodes();
 //!
 //!    for node in &graph.nodes {
 //!       assert!(node.outputs.is_empty());
@@ -796,7 +814,7 @@
 //! inferred automatically. For example, the `detach_all_nodes` method requires self to have the
 //! `edges` and `nodes` fields mutably borrowed, but you can simply call it as follows:
 //!
-//! ```ignore
+//! ```
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
 //! # use borrow::traits::*;
@@ -808,97 +826,24 @@
 //! #     edges: Vec<usize>,
 //! # }
 //! #
-//! # impl p!(<mut nodes> Graph) {
+//! # trait GraphDetachAllNodes {
+//! #     fn detach_all_nodes(&mut self);
+//! # }
+//! #
+//! # impl GraphDetachAllNodes for p!(&<mut nodes> Graph) {
 //! #     fn detach_all_nodes(&mut self) {}
 //! # }
 //! #
 //! fn main() {
 //!    let mut graph: Graph = Graph::default();
-//!    let mut graph_ref: p!(<mut *>Graph) = graph.as_refs_mut();
-//!    graph_ref.partial_borrow().detach_all_nodes();
+//!    p!(&mut graph).detach_all_nodes();
 //! }
 //! ```
 //!
 //! <br/>
 //! <br/>
 //!
-//! # Why identity partial borrow is disallowed?
-//! Please note, that the `partial_borrow` method does not allow you to request the same fields as
-//! the original borrow. This is to enforce the code to be explicit and easy to understand:
-//!
-//! <sub></sub>
-//!
-//! 1. Whenever you see the call to `partial_borrow`, you can be sure that target borrow uses
-//!    subset of fields from the original borrow:
-//!    ```ignore
-//!    # use std::vec::Vec;
-//!    # use borrow::partial as p;
-//!    # use borrow::traits::*;
-//!    #
-//!    #    #[derive(Default, borrow::Partial)]
-//!    #    #[module(crate)]
-//!    # struct Graph {
-//!    #     nodes: Vec<usize>,
-//!    #     edges: Vec<usize>,
-//!    # }
-//!    #
-//!    # impl p!(<mut nodes> Graph) {
-//!    #     fn detach_all_nodes(&mut self) {}
-//!    # }
-//!    #
-//!    # fn main() {}
-//!    #
-//!    fn run(graph: p!(&<mut nodes, mut edges> Graph)) {
-//!        // ERROR: Cannot partially borrow the same fields as the original borrow.
-//!        // Instead, you should pass `graph` directly as `test(graph)`.
-//!        test(graph.partial_borrow())
-//!    }
-//!
-//!    fn test(graph: p!(&<mut nodes, mut edges> Graph)) { /* ... */ }
-//!    ```
-//!
-//! <sub></sub>
-//!
-//! 2. If you refactor your code and the new version does not require all field references it used
-//!    to require, you will get compilation errors in all usage places that were assuming the full
-//!    usage. This allows you to easily review the places that either need to introduce a new
-//!    partial borrow or need to update their type signatures:
-//!    ```ignore
-//!    # use std::vec::Vec;
-//!    # use borrow::partial as p;
-//!    # use borrow::traits::*;
-//!    #
-//!    #    #[derive(Default, borrow::Partial)]
-//!    #    #[module(crate)]
-//!    # struct Graph {
-//!    #     nodes: Vec<usize>,
-//!    #     edges: Vec<usize>,
-//!    # }
-//!    #
-//!    # impl p!(<mut nodes> Graph) {
-//!    #     fn detach_all_nodes(&mut self) {}
-//!    # }
-//!    #
-//!    # fn main() {}
-//!    #
-//!    fn run(graph: p!(&<mut nodes, mut edges> Graph)) {
-//!        test(graph)
-//!    }
-//!
-//!    // Changing this signature to `test(graph: p!(&<mut nodes> Graph))` would
-//!    // cause a compilation error in the `main` function, as the required borrow
-//!    // is smaller than the one provided. There are two possible solutions:
-//!    // 1. Change the call site to `test(graph.partial_borrow())`.
-//!    // 2. Change the `main` function signature to reflect the new requirements:
-//!    //    `main(graph: p!(&<mut nodes> Graph))`.
-//!    fn test(graph: p!(&<mut nodes, mut edges> Graph)) { /* ... */ }
-//!    ```
-//!
-//! <sub></sub>
-//!
-//! 3. In case you want to opt-out from this check, there is also a `partial_borrow_or_identity`
-//!    method that does not perform this compile-time check. However, we recommend using it only in
-//!    exceptional cases, as it may lead to confusion and harder-to-maintain code.
+//! # Unused borrows tracking
 //!
 //! <br/>
 //! <br/>
@@ -1284,7 +1229,7 @@ where T: IntoPartial<ExplicitParams<S, T2>> {
     type Rest = <T as IntoPartial<ExplicitParams<S, T2>>>::Rest;
     #[track_caller]
     #[inline(always)]
-    fn into_split_impl(mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
+    fn into_split_impl(self) -> (ExplicitParams<S, T2>, Self::Rest) {
         self.value.into_split_impl()
     }
 }
@@ -1403,53 +1348,6 @@ where 't: 'y {
     }
 }
 
-// =============
-// === Macro ===
-// =============
-
-#[macro_export]
-macro_rules! partial {
-    (&mut $expr:expr) => { $expr.partial_borrow() };
-
-    // & 'glt < fs... > Ctx < ps... >
-    (& $def_lt:lifetime < $($ts:tt)*) => { $crate::partial! { @2 $def_lt [] $($ts)* } };
-    (&                  < $($ts:tt)*) => { $crate::partial! { @2 '_      [] $($ts)* } };
-
-    // // 'def_lt, fs...> Ctx <...>
-    // (@1 $fs:tt $def_lt:lifetime , $($ts:tt)*) => { $crate::partial! { @2 $def_lt $fs $($ts)* } };
-    // (@1 $fs:tt                        $($ts:tt)*) => { $crate::partial! { @2 '_      $fs $($ts)* } };
-
-    // fs ...> Ctx <...>
-    (@2 $def_lt:tt $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @3 $def_lt $n $fs          $($ts)* } };
-    (@2 $def_lt:tt [$($fs:tt)*]   $f:tt    $($ts:tt)*) => { $crate::partial! { @2 $def_lt    [$($fs)* $f] $($ts)* } };
-
-    // Ctx <...>
-    (@3 $def_lt:tt $n:ident $fs:tt)              => { $crate::partial! { @5 $def_lt $n $fs [] } };
-    (@3 $def_lt:tt $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @4 $def_lt $n $fs [] $($ts)* } };
-
-    // <...>
-    (@4 $def_lt:tt $n:ident $fs:tt $ps:tt >)                      => { $crate::partial! { @5 $def_lt $n $fs $ps                   } };
-    (@4 $def_lt:tt $n:ident $fs:tt [$($ps:tt)*] $p:tt $($ts:tt)*) => { $crate::partial! { @4 $def_lt $n $fs [$($ps)* $p]  $($ts)* } };
-
-    // Production
-    (@5 $def_lt:tt $n:ident $fs:tt [$($ps:tt)*]) => { $crate::partial! { @6 $def_lt $n $fs [$($ps)*] $crate::FieldsAsHidden<$n<$($ps)*>> } };
-
-    (@6 $def_lt:tt $n:ident [, $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => {
-        $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $($ts)* }
-    };
-
-    (@6 $def_lt:tt $n:ident [$lt:lifetime mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$lt,     $n<$($ps)*>> } };
-    (@6 $def_lt:tt $n:ident [             mut *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsMut   <$def_lt, $n<$($ps)*>> } };
-    (@6 $def_lt:tt $n:ident [$lt:lifetime     *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$lt,     $n<$($ps)*>> } };
-    (@6 $def_lt:tt $n:ident [                 *     $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::FieldsAsRef   <$def_lt, $n<$($ps)*>> } };
-    (@6 $def_lt:tt $n:ident [$lt:lifetime mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$lt,     $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@6 $def_lt:tt $n:ident [             mut $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsMut <$def_lt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@6 $def_lt:tt $n:ident [$lt:lifetime     $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$lt,     $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-    (@6 $def_lt:tt $n:ident [                 $f:tt $($fs:tt)*] [$($ps:tt)*] $($ts:tt)*) => { $crate::partial! { @6 $def_lt $n [$($fs)*] [$($ps)*] $crate::SetFieldAsRef <$def_lt, $n<$($ps)*>, $crate::Str!($f), $($ts)*> } };
-
-    (@6 $def_lt:tt $n:ident [] [$($ps:tt)*] $($ts:tt)*) => { $crate::ExplicitParams<$n<$($ps)*>, $crate::RefWithFields< $n<$($ps)*> , $($ts)* >> };
-}
-
 // ===============
 // === Partial ===
 // ===============
@@ -1464,10 +1362,10 @@ pub trait IntoPartial<Target> {
     fn into_split_impl(self) -> (Target, Self::Rest);
 }
 
-pub trait SplitHelper<'s> {
+pub trait SplitHelper {
     #[track_caller]
     #[inline(always)]
-    fn split<Target>(&'s mut self) -> (Target, Self::Rest)
+    fn split<'s, Target>(&'s mut self) -> (Target, Self::Rest)
     where Self: Partial<'s, Target> {
         self.split_impl()
     }
@@ -1475,16 +1373,16 @@ pub trait SplitHelper<'s> {
     #[track_caller]
     #[inline(always)]
     fn into_split<Target>(self) -> (Target, Self::Rest)
-    where Self: IntoPartial<Target> {
+    where Self: Sized + IntoPartial<Target> {
         self.into_split_impl()
     }
 }
-impl<'t, T> SplitHelper<'t> for T {}
+impl<T> SplitHelper for T {}
 
-pub trait PartialHelper<'s> {
+pub trait PartialHelper {
     #[track_caller]
     #[inline(always)]
-    fn partial_borrow<Target>(&'s mut self) -> Target
+    fn partial_borrow<'s, Target>(&'s mut self) -> Target
     where Self: Partial<'s, Target> {
         self.split_impl().0
     }
@@ -1496,7 +1394,7 @@ pub trait PartialHelper<'s> {
         self.into_split_impl().0
     }
 }
-impl<'t, T> PartialHelper<'t> for T {}
+impl<T> PartialHelper for T {}
 
 // ===========
 // === GEN ===
@@ -1524,9 +1422,9 @@ mod sandbox {
     pub struct Ctx<'t, T: Debug> {
         pub version: &'t T,
         pub geometry: GeometryCtx,
-        // pub material: MaterialCtx,
-        // pub mesh: MeshCtx,
-        // pub scene: SceneCtx,
+        pub material: MaterialCtx,
+        pub mesh: MeshCtx,
+        pub scene: SceneCtx,
     }
 
 
@@ -1550,9 +1448,10 @@ mod sandbox {
             ExplicitParams::new(self.value.clone_ref_disabled_usage_tracking())
         }
     }
+
+
+
 }
-
-
 
 use sandbox::*;
 
@@ -1563,9 +1462,9 @@ pub fn test() {
     let mut ctx = Ctx {
         version: &version,
         geometry: GeometryCtx {},
-        // material: MaterialCtx {},
-        // mesh: MeshCtx {},
-        // scene: SceneCtx {},
+        material: MaterialCtx {},
+        mesh: MeshCtx {},
+        scene: SceneCtx {},
     };
 
     // ctx_ref_mut.disable_field_usage_tracking();
@@ -1607,9 +1506,12 @@ fn test5<'t>(_ctx: p!(&<geometry>Ctx<'_, usize>)) {
 }
 
 fn test6<'t>(_ctx: p!(&'t<mut *>Ctx<'_, usize>)) {
-    // &*_ctx.geometry;
+    &*_ctx.scene;
     println!("yo")
 }
+
+// partial2!(&<mut geometry>Ctx<'_, usize>); // FIXME
+
 
 // fn test5<'t>(_ctx: p!(&'t<mut geometry>Ctx<'_, usize>)) {
 //     &*_ctx.geometry;
