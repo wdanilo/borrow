@@ -351,7 +351,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //     __Version, __Geometry, __Material, __Mesh, __Scene,
     //     __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target,
     //     __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>
-    // borrow::Partial<'__a__, ExplicitParams<__S__, CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>>
+    // borrow::Partial<'__a__, CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
     // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
     // where
     //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Version, __Version__Target, Rest=__Version__Rest>,
@@ -360,22 +360,18 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Mesh, __Mesh__Target, Rest=__Mesh__Rest>,
     //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Scene, __Scene__Target, Rest=__Scene__Rest>,
     // {
-    //     type Rest = ExplicitParams<__S__, CtxRef<__S__, __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>>;
+    //     type Rest = CtxRef<__S__, __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>;
     //     #[track_caller]
     //     #[inline(always)]
     //     fn split_impl(
     //         &'__a__ mut self
-    //     ) -> (
-    //         ExplicitParams<
+    //     ) -> (CtxRef<
     //             __S__,
-    //             CtxRef<
-    //                 __S__,
-    //                 __Version__Target,
-    //                 __Geometry__Target,
-    //                 __Material__Target,
-    //                 __Mesh__Target,
-    //                 __Scene__Target
-    //             >
+    //             __Version__Target,
+    //             __Geometry__Target,
+    //             __Material__Target,
+    //             __Mesh__Target,
+    //             __Scene__Target
     //         >,
     //         Self::Rest
     //     ) {
@@ -386,26 +382,22 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //         let (mesh, __mesh__rest) = borrow::AcquireMarker::acquire(&mut self.mesh);
     //         let (scene, __scene__rest) = borrow::AcquireMarker::acquire(&mut self.scene);
     //         (
-    //             ExplicitParams::new(
-    //                 CtxRef {
-    //                     version,
-    //                     geometry,
-    //                     material,
-    //                     mesh,
-    //                     scene,
-    //                     marker: std::marker::PhantomData
-    //                 }
-    //             ),
-    //             ExplicitParams::new(
-    //                 CtxRef {
-    //                     version: __version__rest,
-    //                     geometry: __geometry__rest,
-    //                     material: __material__rest,
-    //                     mesh: __mesh__rest,
-    //                     scene: __scene__rest,
-    //                     marker: std::marker::PhantomData
-    //                 }
-    //             )
+    //             CtxRef {
+    //                 version,
+    //                 geometry,
+    //                 material,
+    //                 mesh,
+    //                 scene,
+    //                 marker: std::marker::PhantomData
+    //             },
+    //             CtxRef {
+    //                 version: __version__rest,
+    //                 geometry: __geometry__rest,
+    //                 material: __material__rest,
+    //                 mesh: __mesh__rest,
+    //                 scene: __scene__rest,
+    //                 marker: std::marker::PhantomData
+    //             }
     //         )
     //     }
     // }
@@ -432,7 +424,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 #(#field_params_target,)*
                 #(#field_params_rest,)*
             >
-            borrow::IntoPartial<borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_target,)*>>>
+            borrow::IntoPartial<#ref_ident<__S__, #(#field_params_target,)*>>
             for #ref_ident<__S__, #(#fields_param,)*>
             where
                 #(
@@ -443,32 +435,28 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                     >,
                 )*
             {
-                type Rest = borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_rest,)*>>;
+                type Rest = #ref_ident<__S__, #(#field_params_rest,)*>;
 
                 #[track_caller]
                 #[inline(always)]
                 fn into_split_impl(
                     mut self
                 ) -> (
-                    borrow::ExplicitParams<__S__, #ref_ident<__S__, #(#field_params_target,)*>>,
+                    #ref_ident<__S__, #(#field_params_target,)*>,
                     Self::Rest
                 ) {
                     use borrow::Acquire;
                     #(let (#fields_ident, #fields_rest_ident) =
                         borrow::AcquireMarker::acquire(self.#fields_ident);)*
                     (
-                        borrow::ExplicitParams::new(
-                            #ref_ident {
-                                #(#fields_ident,)*
-                                marker: std::marker::PhantomData
-                            }
-                        ),
-                        borrow::ExplicitParams::new(
-                            #ref_ident {
-                                #(#fields_ident: #fields_rest_ident,)*
-                                marker: std::marker::PhantomData
-                            }
-                        )
+                        #ref_ident {
+                            #(#fields_ident,)*
+                            marker: std::marker::PhantomData
+                        },
+                        #ref_ident {
+                            #(#fields_ident: #fields_rest_ident,)*
+                            marker: std::marker::PhantomData
+                        }
                     )
                 }
             }
@@ -595,12 +583,9 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 #field_ty: '__tgt,
                 Self: borrow::CloneRef<'__s>,
                 borrow::ClonedRef<'__s, Self>: borrow::IntoPartial<
-                    borrow::ExplicitParams<
+                    #ref_ident<
                         #ident<#params>,
-                        #ref_ident<
-                            #ident<#params>,
-                            #(#target_params,)*
-                        >
+                        #(#target_params,)*
                     >
                 >
             {
@@ -609,19 +594,16 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 pub fn #fn_ident(&'__s mut self) -> (
                     borrow::Field<#field_ref_mut>,
                         <borrow::ClonedRef<'__s, Self> as borrow::IntoPartial<
-                            borrow::ExplicitParams<
+                            #ref_ident<
                                 #ident<#params>,
-                                #ref_ident<
-                                    #ident<#params>,
-                                    #(#target_params,)*
-                                >
+                                #(#target_params,)*
                             >
                         >>::Rest
                 ) {
                     let split = borrow::IntoPartial::into_split_impl(
                         borrow::CloneRef::clone_ref_disabled_usage_tracking(self)
                     );
-                    (split.0.value.#field_ident, split.1)
+                    (split.0.#field_ident, split.1)
                 }
             }
         }
@@ -681,10 +663,9 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     out.push(quote! {
         impl<#params> borrow::AsRefsMut for #ident<#params>
         where #bounds {
-            type Target<'__s> = borrow::ExplicitParams<
-                Self,
+            type Target<'__s> =
                 borrow::RefWithFields<#ident<#params>, borrow::FieldsAsMut<'__s, #ident<#params>>>
-            > where Self: '__s;
+            where Self: '__s;
             #[track_caller]
             #[inline(always)]
             fn as_refs_mut<'__s>(&'__s mut self) -> Self::Target<'__s> {
@@ -698,7 +679,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                     marker: std::marker::PhantomData,
                 };
                 borrow::HasUsageTrackedFields::disable_field_usage_tracking(&struct_ref);
-                borrow::ExplicitParams::new(struct_ref)
+                struct_ref
             }
         }
     });
@@ -852,10 +833,7 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 
         out = quote! {
-            borrow::ExplicitParams<
-                #target,
-                borrow::RefWithFields< #target, #out >
-            >
+            borrow::RefWithFields< #target, #out >
         };
         out
     };

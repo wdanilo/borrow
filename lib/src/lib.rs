@@ -1152,88 +1152,88 @@ pub trait AsRefWithFields<F> {
 
 pub type RefWithFields<T, F> = <T as AsRefWithFields<F>>::Output;
 
-// ======================
-// === ExplicitParams ===
-// ======================
-
-#[repr(transparent)]
-pub struct ExplicitParams<Args, T> {
-    pub value: T,
-    phantom_data: PhantomData<Args>
-}
-
-impl<Args, T> ExplicitParams<Args, T> {
-    #[inline(always)]
-    pub fn new(value: T) -> Self {
-        Self { value, phantom_data: PhantomData }
-    }
-}
-
-impl<Args, T> Deref for ExplicitParams<Args, T> {
-    type Target = T;
-    #[inline(always)]
-    fn deref(&self) -> &T {
-        &self.value
-    }
-}
-
-impl<Args, T> DerefMut for ExplicitParams<Args, T> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
-}
-
-// === HasFields ===
-
-impl<S, T> HasFields for ExplicitParams<S, T>
-where T: HasFields {
-    type Fields = T::Fields;
-}
-
-impl<A, T, Field> HasField<Field>
-for ExplicitParams<A, T>
-where T: HasField<Field> {
-    type Type = <T as HasField<Field>>::Type;
-    type Index = <T as HasField<Field>>::Index;
-    #[inline(always)]
-    fn take_field(self) -> Self::Type {
-        self.value.take_field()
-    }
-}
-
-impl<Args, T> HasUsageTrackedFields for ExplicitParams<Args, T>
-where T: HasUsageTrackedFields {
-    fn disable_field_usage_tracking(&self) {
-        self.value.disable_field_usage_tracking();
-    }
-}
-
-impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T> where
-    Self: CloneRef<'x>,
-    ClonedRef<'x, Self>: IntoPartial<ExplicitParams<S, T2>>
-{
-    type Rest = <ClonedRef<'x, Self> as IntoPartial<ExplicitParams<S, T2>>>::Rest;
-    #[track_caller]
-    #[inline(always)]
-    fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
-        // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
-        // we need to disable them.
-        let this = self.clone_ref_disabled_usage_tracking();
-        this.into_split_impl()
-    }
-}
-
-
-impl<'x, S, T, T2> IntoPartial<ExplicitParams<S, T2>> for ExplicitParams<S, T>
-where T: IntoPartial<ExplicitParams<S, T2>> {
-    type Rest = <T as IntoPartial<ExplicitParams<S, T2>>>::Rest;
-    #[track_caller]
-    #[inline(always)]
-    fn into_split_impl(self) -> (ExplicitParams<S, T2>, Self::Rest) {
-        self.value.into_split_impl()
-    }
-}
+// // ======================
+// // === ExplicitParams ===
+// // ======================
+//
+// #[repr(transparent)]
+// pub struct ExplicitParams<Args, T> {
+//     pub value: T,
+//     phantom_data: PhantomData<Args>
+// }
+//
+// impl<Args, T> ExplicitParams<Args, T> {
+//     #[inline(always)]
+//     pub fn new(value: T) -> Self {
+//         Self { value, phantom_data: PhantomData }
+//     }
+// }
+//
+// impl<Args, T> Deref for ExplicitParams<Args, T> {
+//     type Target = T;
+//     #[inline(always)]
+//     fn deref(&self) -> &T {
+//         &self.value
+//     }
+// }
+//
+// impl<Args, T> DerefMut for ExplicitParams<Args, T> {
+//     #[inline(always)]
+//     fn deref_mut(&mut self) -> &mut T {
+//         &mut self.value
+//     }
+// }
+//
+// // === HasFields ===
+//
+// impl<S, T> HasFields for ExplicitParams<S, T>
+// where T: HasFields {
+//     type Fields = T::Fields;
+// }
+//
+// impl<A, T, Field> HasField<Field>
+// for ExplicitParams<A, T>
+// where T: HasField<Field> {
+//     type Type = <T as HasField<Field>>::Type;
+//     type Index = <T as HasField<Field>>::Index;
+//     #[inline(always)]
+//     fn take_field(self) -> Self::Type {
+//         self.value.take_field()
+//     }
+// }
+//
+// impl<Args, T> HasUsageTrackedFields for ExplicitParams<Args, T>
+// where T: HasUsageTrackedFields {
+//     fn disable_field_usage_tracking(&self) {
+//         self.value.disable_field_usage_tracking();
+//     }
+// }
+//
+// impl<'x, S, T, T2> Partial<'x, ExplicitParams<S, T2>> for ExplicitParams<S, T> where
+//     Self: CloneRef<'x>,
+//     ClonedRef<'x, Self>: IntoPartial<ExplicitParams<S, T2>>
+// {
+//     type Rest = <ClonedRef<'x, Self> as IntoPartial<ExplicitParams<S, T2>>>::Rest;
+//     #[track_caller]
+//     #[inline(always)]
+//     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
+//         // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
+//         // we need to disable them.
+//         let this = self.clone_ref_disabled_usage_tracking();
+//         this.into_split_impl()
+//     }
+// }
+//
+//
+// impl<'x, S, T, T2> IntoPartial<ExplicitParams<S, T2>> for ExplicitParams<S, T>
+// where T: IntoPartial<ExplicitParams<S, T2>> {
+//     type Rest = <T as IntoPartial<ExplicitParams<S, T2>>>::Rest;
+//     #[track_caller]
+//     #[inline(always)]
+//     fn into_split_impl(self) -> (ExplicitParams<S, T2>, Self::Rest) {
+//         self.value.into_split_impl()
+//     }
+// }
 
 // ==============
 // === Hidden ===
@@ -1412,7 +1412,7 @@ extern crate self as borrow;
 mod sandbox {
 
     use std::fmt::Debug;
-    use super::{ExplicitParams, IntoPartial};
+    use super::{IntoPartial};
 
     pub struct GeometryCtx {}
     pub struct MaterialCtx {}
@@ -1441,14 +1441,44 @@ mod sandbox {
             self.as_refs_mut().into_split_impl()
         }
     }
+    //
+    // impl<'s, Args, T> borrow::CloneRef<'s> for ExplicitParams<Args, T>
+    // where T: borrow::CloneRef<'s> {
+    //     type Cloned = ExplicitParams<Args, borrow::ClonedRef<'s, T>>;
+    //     fn clone_ref_disabled_usage_tracking(&'s mut self) -> Self::Cloned {
+    //         ExplicitParams::new(self.value.clone_ref_disabled_usage_tracking())
+    //     }
+    // }
 
-    impl<'s, Args, T> borrow::CloneRef<'s> for ExplicitParams<Args, T>
-    where T: borrow::CloneRef<'s> {
-        type Cloned = ExplicitParams<Args, borrow::ClonedRef<'s, T>>;
-        fn clone_ref_disabled_usage_tracking(&'s mut self) -> Self::Cloned {
-            ExplicitParams::new(self.value.clone_ref_disabled_usage_tracking())
+
+    impl<'x, __S__, __Version, __Geometry, __Material, __Mesh, __Scene, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>
+    borrow::Partial<'x, CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>
+    for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> where
+        Self: borrow::CloneRef<'x>,
+        borrow::ClonedRef<'x, Self>: IntoPartial<CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>
+    {
+        type Rest = <borrow::ClonedRef<'x, Self> as IntoPartial<CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>>::Rest;
+        #[track_caller]
+        #[inline(always)]
+        fn split_impl(&'x mut self) -> (CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>, Self::Rest) {
+            use borrow::CloneRef;
+            // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
+            // we need to disable them.
+            let this = self.clone_ref_disabled_usage_tracking();
+            this.into_split_impl()
         }
     }
+    //
+    //
+    // impl<'x, S, T, T2> IntoPartial<ExplicitParams<S, T2>> for ExplicitParams<S, T>
+    // where T: IntoPartial<ExplicitParams<S, T2>> {
+    //     type Rest = <T as IntoPartial<ExplicitParams<S, T2>>>::Rest;
+    //     #[track_caller]
+    //     #[inline(always)]
+    //     fn into_split_impl(self) -> (ExplicitParams<S, T2>, Self::Rest) {
+    //         self.value.into_split_impl()
+    //     }
+    // }
 
 
 
