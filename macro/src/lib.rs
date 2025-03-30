@@ -7,6 +7,7 @@ use quote::quote;
 use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Type};
 use itertools::Itertools;
 use proc_macro2::TokenStream;
+use proc_macro2::Span;
 
 // =============
 // === Utils ===
@@ -194,6 +195,19 @@ fn get_bounds(input: &DeriveInput) -> TokenStream {
     quote! {#(#inline_bounds,)* #(#where_bounds,)*}
 }
 
+
+fn get_module_tokens(attr: &syn::Attribute) -> Option<TokenStream> {
+    if !attr.path().is_ident("module") {
+        return None;
+    }
+
+    // Parse as Meta::List to get access to the tokens inside
+    match &attr.meta {
+        syn::Meta::List(syn::MetaList { tokens, .. }) => Some(tokens.clone()),
+        _ => None,
+    }
+}
+
 // The internal macro documentation shows expansion parts for the following input:
 // ```
 // pub struct GeometryCtx {}
@@ -216,6 +230,12 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
     let input_raw2 = input_raw.clone();
     let input = parse_macro_input!(input_raw2 as DeriveInput);
+
+    let path = input.attrs.iter()
+        .find_map(|attr| get_module_tokens(attr))
+        .expect("Expected #[module(...)] attribute");
+
+    // panic!("Module path: {}", path);
 
     let ident = &input.ident;
     let fields = get_fields(&input);
@@ -267,6 +287,80 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
     out.push(ref_struct_def.clone());
     out.push(meta_derive(ref_struct_def.into()).into());
+
+    // Generates:
+    //
+    // ```
+    // #[macro_export]
+    // macro_rules! CtxMacro {
+    //     (@0 $s:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s [] [] [] [] [] $($ts)* } };
+    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt *        $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $n  $n  $n  $n  $n  $($ts)* } };
+    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt version  $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $n  $t1 $t2 $t3 $t4 $($ts)* } };
+    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt geometry $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $t0 $n  $t2 $t3 $t4 $($ts)* } };
+    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt material $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $t0 $t1 $n  $t3 $t4 $($ts)* } };
+    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt mesh     $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $t0 $t1 $t2 $n  $t4 $($ts)* } };
+    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt scene    $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $t0 $t1 $t2 $t3 $n  $($ts)* } };
+    //     (@1 [$s:ty] [$($t0:tt)*] [$($t1:tt)*] [$($t2:tt)*] [$($t3:tt)*] [$($t4:tt)*] ) => {
+    //         CtxRef<$s, borrow::field!{$s, N0, $($t0)*}, borrow::field!{$s, N1, $($t1)*}, borrow::field!{$s, N2, $($t2)*}, borrow::field!{$s, N3, $($t3)*}, borrow::field!{$s, N4, $($t4)*}>
+    //     };
+    // }
+    // pub use CtxMacro as Ctx;
+    // ```
+    let xx = ({
+    // out.push({
+        fn matcher(i: usize) -> Ident {
+            Ident::new(&format!("t{i}"), Span::call_site())
+        }
+        let macro_ident = Ident::new(&format!("{}Macro", ident), ident.span());
+        let matchers = (0..fields_ident.len()).map(matcher).map(|t| quote!{$#t:tt}).collect_vec();
+        let def_results  = (0..fields_ident.len()).map(matcher).map(|t| quote!{$#t}).collect_vec();
+        let init_rule = {
+            let all_empty = (0..fields_ident.len()).map(|_| quote!{[]}).collect_vec();
+            quote! {
+                (@0 $s:tt $($ts:tt)*) => { #path::#ident! { @1 $s #(#all_empty)* $($ts)* } };
+            }
+        };
+        let field_rules = fields_ident.iter().enumerate().map(|(i, field)| {
+            let mut results = def_results.clone();
+            results[i] = quote! {$n};
+            quote! {
+                (@1 $s:tt #(#matchers)* #field $n:tt $($ts:tt)*) => { #path::#ident! { @1 $s #(#results)* $($ts)* } };
+            }
+        });
+        let star_rule = {
+            let all_n_results = (0..fields_ident.len()).map(|_| quote!{$n}).collect_vec();
+            quote! {
+                (@1 $s:tt #(#matchers)* * $n:tt $($ts:tt)*) => { #path::#ident! { @1 $s #(#all_n_results)*  $($ts)* } };
+            }
+        };
+        let production = {
+            let matchers_exp = (0..fields_ident.len()).map(matcher).map(|t| quote!{[$($#t:tt)*]}).collect_vec();
+            let fields = def_results.iter().enumerate().map(|(i, t)| {
+                let n = Ident::new(&format!("N{i}"), Span::call_site());
+                quote! {
+                    borrow::field!{$s, #n, $(#t)*}
+                }
+            }).collect_vec();
+            quote! {
+                (@1 [$s:ty] #(#matchers_exp)* ) => {
+                    #path::#ref_ident<$s, #(#fields,)*>
+                };
+            }
+        };
+        quote! {
+            #[macro_export]
+            macro_rules! #macro_ident {
+                #init_rule
+                #star_rule
+                #(#field_rules)*
+                #production
+            }
+            pub use #macro_ident as #ident;
+        }
+    });
+
+    // println!("{}", xx);
+    out.push(xx);
 
     // Generates:
     //
@@ -458,6 +552,32 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                             marker: std::marker::PhantomData
                         }
                     )
+                }
+            }
+        }
+    });
+
+    out.push({
+        let fields_param_target = fields_param.iter().map(|i| {
+            Ident::new(&format!("{i}{}", internal("Target")), i.span())
+        }).collect_vec();
+        quote! {
+            impl<'__a__, __S__, #(#fields_param,)* #(#fields_param_target,)*>
+            borrow::Partial<'__a__, #ref_ident<__S__, #(#fields_param_target,)*>>
+            for #ref_ident<__S__, #(#fields_param,)*> where
+                Self: borrow::CloneRef<'__a__>,
+                borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<#ref_ident<__S__, #(#fields_param_target,)*>>
+            {
+                type Rest = <borrow::ClonedRef<'__a__, Self> as borrow::IntoPartial<#ref_ident<__S__, #(#fields_param_target,)*>>>::Rest;
+                #[track_caller]
+                #[inline(always)]
+                fn split_impl(&'__a__ mut self) -> (#ref_ident<__S__, #(#fields_param_target,)*>, Self::Rest) {
+                    use borrow::CloneRef;
+                    use borrow::IntoPartial;
+                    // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
+                    // we need to disable them.
+                    let this = self.clone_ref_disabled_usage_tracking();
+                    this.into_split_impl()
                 }
             }
         }
@@ -781,6 +901,72 @@ impl Parse for MyInput {
     }
 }
 
+// #[allow(clippy::cognitive_complexity)]
+// #[proc_macro]
+// pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
+//     let input = parse_macro_input!(input_raw as MyInput);
+//
+//     let target_ident = match &input.target {
+//         Type::Path(type_path) if type_path.path.segments.len() == 1 && input.selectors.is_all() => {
+//             let ident = &type_path.path.segments[0].ident;
+//             let is_lower = ident.to_string().chars().next().map(|c| c.is_lowercase()).unwrap_or(false);
+//             is_lower.then_some(&type_path.path.segments[0].ident)
+//         }
+//         _ => None,
+//     };
+//
+//     let out = if let Some(target_ident) = target_ident {
+//         quote! {
+//             #target_ident.partial_borrow()
+//         }
+//     } else {
+//         let target = &input.target;
+//         let default_lifetime = input.lifetime.unwrap_or_else(|| quote!{ '_ });
+//         let mut out = quote! { borrow::FieldsAsHidden<#target> };
+//         match &input.selectors {
+//             Selectors::All => out = quote! {
+//                 borrow::FieldsAsMut <#default_lifetime, #target>
+//             },
+//             Selectors::List(selectors) => {
+//                 for selector in selectors {
+//                     out = match selector {
+//                         Selector::Ident { lifetime, is_mut, ident } => {
+//                             let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
+//                             if *is_mut {
+//                                 quote! { borrow::SetFieldAsMut <#lt, #target, borrow::Str!(#ident), #out>   }
+//                             } else {
+//                                 quote! { borrow::SetFieldAsRef <#lt, #target, borrow::Str!(#ident), #out>   }
+//                             }
+//                         }
+//                         Selector::Star { lifetime, is_mut } => {
+//                             let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
+//                             if *is_mut {
+//                                 quote! { borrow::FieldsAsMut <#lt, #target>   }
+//                             } else {
+//                                 quote! { borrow::FieldsAsRef <#lt, #target>   }
+//                             }
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//
+//
+//         out = quote! {
+//             borrow::RefWithFields< #target, #out >
+//         };
+//         out
+//     };
+//
+//
+//     // println!("{}", out);
+//
+//     // let out = quote! {
+//     //
+//     // };
+//     out.into()
+// }
+
 #[allow(clippy::cognitive_complexity)]
 #[proc_macro]
 pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -800,9 +986,16 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
             #target_ident.partial_borrow()
         }
     } else {
+        let target_ident = match &input.target {
+            Type::Path(type_path) if type_path.path.segments.len() == 1 => {
+                &type_path.path.segments[0].ident
+            }
+            _ => panic!()
+        };
+
         let target = &input.target;
         let default_lifetime = input.lifetime.unwrap_or_else(|| quote!{ '_ });
-        let mut out = quote! { borrow::FieldsAsHidden<#target> };
+        let mut out = quote! { };
         match &input.selectors {
             Selectors::All => out = quote! {
                 borrow::FieldsAsMut <#default_lifetime, #target>
@@ -813,17 +1006,17 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         Selector::Ident { lifetime, is_mut, ident } => {
                             let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
                             if *is_mut {
-                                quote! { borrow::SetFieldAsMut <#lt, #target, borrow::Str!(#ident), #out>   }
+                                quote! { #out #ident [& #lt mut]   }
                             } else {
-                                quote! { borrow::SetFieldAsRef <#lt, #target, borrow::Str!(#ident), #out>   }
+                                quote! { #out #ident [& #lt]   }
                             }
                         }
                         Selector::Star { lifetime, is_mut } => {
                             let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
                             if *is_mut {
-                                quote! { borrow::FieldsAsMut <#lt, #target>   }
+                                quote! { * [& #lt mut]    }
                             } else {
-                                quote! { borrow::FieldsAsRef <#lt, #target>   }
+                                quote! { * [& #lt]   }
                             }
                         }
                     }
@@ -833,7 +1026,7 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 
         out = quote! {
-            borrow::RefWithFields< #target, #out >
+            #target_ident!{@0 [#target] #out}
         };
         out
     };

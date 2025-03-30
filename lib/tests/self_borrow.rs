@@ -46,11 +46,7 @@ struct Graph {
 // === Utils ===
 // =============
 
-trait GraphDetachAllNodes {
-    fn detach_all_nodes(self);
-}
-
-impl GraphDetachAllNodes for p!(&<mut *> Graph) {
+impl p!(&<mut *> Graph) {
     fn detach_all_nodes(mut self) {
         let (nodes, mut self2) = self.extract_nodes();
         for node in nodes {
@@ -60,11 +56,7 @@ impl GraphDetachAllNodes for p!(&<mut *> Graph) {
     }
 }
 
-trait GraphDetachNode {
-    fn detach_node(self, node: &mut Node);
-}
-
-impl GraphDetachNode for p!(&<mut edges> Graph) {
+impl p!(&<mut edges> Graph) {
     fn detach_node(mut self, node: &mut Node) {
         for edge_id in std::mem::take(&mut node.outputs) {
             self.edges[edge_id].from = None;

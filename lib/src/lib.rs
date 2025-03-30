@@ -143,22 +143,17 @@
 //!
 //! impl Graph {
 //!     pub fn as_refs_mut(&mut self) ->
-//!         borrow::ExplicitParams<
-//!             Graph,
-//!             GraphRef<
-//!                 &mut Vec<Node>,
-//!                 &mut Vec<Edge>,
-//!                 &mut Vec<Group>,
-//!             >
-//!         >
+//!        GraphRef<
+//!            &mut Vec<Node>,
+//!            &mut Vec<Edge>,
+//!            &mut Vec<Group>,
+//!        >
 //!     {
-//!         borrow::ExplicitParams::new(
-//!             GraphRef {
-//!                 nodes:  borrow::Field::new("nodes",  &mut self.nodes),
-//!                 edges:  borrow::Field::new("edges",  &mut self.edges),
-//!                 groups: borrow::Field::new("groups", &mut self.groups)
-//!             }
-//!         )
+//!         GraphRef {
+//!             nodes:  borrow::Field::new("nodes",  &mut self.nodes),
+//!             edges:  borrow::Field::new("edges",  &mut self.edges),
+//!             groups: borrow::Field::new("groups", &mut self.groups)
+//!         }
 //!     }
 //! }
 //! ```
@@ -859,7 +854,7 @@ pub use reflect::*;
 pub use borrow_macro::*;
 pub use tstr::TS as Str;
 
-use hlist::*;
+pub use hlist::*;
 
 use std::cell::Cell;
 use std::fmt::Debug;
@@ -1412,6 +1407,7 @@ extern crate self as borrow;
 mod sandbox {
 
     use std::fmt::Debug;
+    use crate::hlist::ItemAt;
     use super::{IntoPartial};
 
     pub struct GeometryCtx {}
@@ -1420,6 +1416,7 @@ mod sandbox {
     pub struct SceneCtx {}
 
     #[derive(borrow::Partial)]
+    #[module(crate)]
     pub struct Ctx<'t, T: Debug> {
         pub version: &'t T,
         pub geometry: GeometryCtx,
@@ -1451,23 +1448,23 @@ mod sandbox {
     // }
 
 
-    impl<'x, __S__, __Version, __Geometry, __Material, __Mesh, __Scene, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>
-    borrow::Partial<'x, CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>
-    for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> where
-        Self: borrow::CloneRef<'x>,
-        borrow::ClonedRef<'x, Self>: IntoPartial<CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>
-    {
-        type Rest = <borrow::ClonedRef<'x, Self> as IntoPartial<CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>>::Rest;
-        #[track_caller]
-        #[inline(always)]
-        fn split_impl(&'x mut self) -> (CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>, Self::Rest) {
-            use borrow::CloneRef;
-            // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
-            // we need to disable them.
-            let this = self.clone_ref_disabled_usage_tracking();
-            this.into_split_impl()
-        }
-    }
+    // impl<'x, __S__, __Version, __Geometry, __Material, __Mesh, __Scene, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>
+    // borrow::Partial<'x, CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>
+    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> where
+    //     Self: borrow::CloneRef<'x>,
+    //     borrow::ClonedRef<'x, Self>: IntoPartial<CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>
+    // {
+    //     type Rest = <borrow::ClonedRef<'x, Self> as IntoPartial<CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>>::Rest;
+    //     #[track_caller]
+    //     #[inline(always)]
+    //     fn split_impl(&'x mut self) -> (CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>, Self::Rest) {
+    //         use borrow::CloneRef;
+    //         // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
+    //         // we need to disable them.
+    //         let this = self.clone_ref_disabled_usage_tracking();
+    //         this.into_split_impl()
+    //     }
+    // }
     //
     //
     // impl<'x, S, T, T2> IntoPartial<ExplicitParams<S, T2>> for ExplicitParams<S, T>
@@ -1484,9 +1481,25 @@ mod sandbox {
 
 }
 
+
+
+#[macro_export]
+macro_rules! field {
+    ($s:ty, $n:tt,) => { borrow::Hidden };
+    ($s:ty, $n:tt, $($ts:tt)+) => { $($ts)+ borrow::ItemAt<borrow::$n, borrow::Fields<$s>> };
+}
+
 use sandbox::*;
 
 use borrow::partial as p;
+
+
+fn test7(_ctx: Ctx!(@0 [Ctx<'_, usize>] * [&'_])) {
+}
+
+impl<'t> Ctx!(@0 [Ctx<'t, usize>] geometry [&'t]) {
+
+}
 
 pub fn test() {
     let version: usize = 0;
@@ -1541,18 +1554,4 @@ fn test6<'t>(_ctx: p!(&'t<mut *>Ctx<'_, usize>)) {
     println!("yo")
 }
 
-// partial2!(&<mut geometry>Ctx<'_, usize>); // FIXME
 
-
-// fn test5<'t>(_ctx: p!(&'t<mut geometry>Ctx<'_, usize>)) {
-//     &*_ctx.geometry;
-//     println!("yo")
-// }
-
-
-
-//
-//
-// impl<'t, T: Debug> partial!(&<>Ctx<'t, T>) {
-//
-// }
