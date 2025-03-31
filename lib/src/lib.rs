@@ -872,6 +872,7 @@ pub mod traits {
     pub use super::PartialHelper as _;
     pub use super::SplitHelper as _;
     pub use super::AsRefsMut as _;
+    pub use super::HasUsageTrackedFields as _;
 }
 
 // =============
@@ -887,12 +888,43 @@ fn default<T: Default>() -> T {
 // === Logging ===
 // ===============
 
-macro_rules! error {
+const MAX_WARNING_COUNT: usize = 100;
+
+thread_local! {
+    static WARNING_COUNT: Cell<usize> = Cell::new(0);
+}
+
+fn inc_warning_count() -> bool {
+    WARNING_COUNT.with(|count| {
+        let new_count = count.get() + 1;
+        count.set(new_count);
+        if new_count >= MAX_WARNING_COUNT {
+            if new_count == MAX_WARNING_COUNT {
+                warning_no_count_check("Too many warnings, suppressing further ones.");
+            }
+            false
+        } else {
+            true
+        }
+    })
+}
+
+fn warning(msg: &str) {
+    if inc_warning_count() {
+        warning_no_count_check(msg)
+    }
+}
+
+fn warning_no_count_check(msg: &str) {
+    #[cfg(feature = "wasm")]
+    web_sys::console::warn_1(&msg.into());
+    #[cfg(not(feature = "wasm"))]
+    eprintln!("{msg}");
+}
+
+macro_rules! warning {
     ($($ts:tt)*) => {
-        #[cfg(feature = "wasm")]
-        web_sys::console::error_1(&format!($($ts)*).into());
-        #[cfg(not(feature = "wasm"))]
-        eprintln!($($ts)*);
+        warning(&format!($($ts)*));
     };
 }
 
@@ -913,10 +945,11 @@ impl Drop for UsageTracker {
     fn drop(&mut self) {
         if !self.used.get() {
             if !self.disabled.get() {
-                error!("Warning [{}]: Field '{}' was not used.", self.loc, self.label);
+                warning!("Warning [{}]: Field '{}' was not used.", self.loc, self.label);
+                self.set_parent_as_used()
             }
-        } else if let Some(parent) = self.parent.take() {
-            parent.set(true);
+        } else {
+            self.set_parent_as_used()
         }
     }
 }
@@ -964,6 +997,12 @@ impl UsageTracker {
 
     fn disable(&self) {
         self.disabled.set(true);
+    }
+
+    fn set_parent_as_used(&self) {
+        if let Some(parent) = self.parent.as_ref() {
+            parent.set(true);
+        }
     }
 }
 
@@ -1541,10 +1580,10 @@ use sandbox::*;
 use borrow::partial as p;
 
 
-fn test7(_ctx: Ctx!(@0 [Ctx<'_, usize>] * [&'_])) {
-}
+// fn test7(_ctx: Ctx!(@0 [Ctx<'_, usize>] * [&'_])) {
+// }
 
-impl<'t> Ctx!(@0 [Ctx<'t, usize>] geometry [&'t]) {
+impl<'t, 's> p!('t<mut *>Ctx<'s, usize>) {
 
 }
 

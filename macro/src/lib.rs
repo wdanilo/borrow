@@ -317,20 +317,20 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
         let init_rule = {
             let all_empty = (0..fields_ident.len()).map(|_| quote!{[]}).collect_vec();
             quote! {
-                (@0 $s:tt $($ts:tt)*) => { #path::#ident! { @1 $s #(#all_empty)* $($ts)* } };
+                (@0 $pfx:tt $s:tt $($ts:tt)*) => { #path::#ident! { @1 $pfx $s #(#all_empty)* $($ts)* } };
             }
         };
         let field_rules = fields_ident.iter().enumerate().map(|(i, field)| {
             let mut results = def_results.clone();
             results[i] = quote! {$n};
             quote! {
-                (@1 $s:tt #(#matchers)* #field $n:tt $($ts:tt)*) => { #path::#ident! { @1 $s #(#results)* $($ts)* } };
+                (@1 $pfx:tt $s:tt #(#matchers)* #field $n:tt $($ts:tt)*) => { #path::#ident! { @1 $pfx $s #(#results)* $($ts)* } };
             }
         });
         let star_rule = {
             let all_n_results = (0..fields_ident.len()).map(|_| quote!{$n}).collect_vec();
             quote! {
-                (@1 $s:tt #(#matchers)* * $n:tt $($ts:tt)*) => { #path::#ident! { @1 $s #(#all_n_results)*  $($ts)* } };
+                (@1 $pfx:tt $s:tt #(#matchers)* * $n:tt $($ts:tt)*) => { #path::#ident! { @1 $pfx $s #(#all_n_results)*  $($ts)* } };
             }
         };
         let production = {
@@ -342,8 +342,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 }
             }).collect_vec();
             quote! {
-                (@1 [$s:ty] #(#matchers_exp)* ) => {
-                    #path::#ref_ident<$s, #(#fields,)*>
+                (@1 [$($pfx:tt)*] [$s:ty] #(#matchers_exp)* ) => {
+                    $($pfx)* #path::#ref_ident<$s, #(#fields,)*>
                 };
             }
         };
@@ -836,6 +836,7 @@ impl Selectors {
 
 // #[derive(Debug)]
 struct MyInput {
+    has_amp: bool,
     lifetime: Option<TokenStream>,
     selectors: Selectors,
     target: Type,
@@ -877,7 +878,7 @@ impl Parse for Selector {
 
 impl Parse for MyInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        input.parse::<Token![&]>()?;
+        let has_amp = input.parse::<Token![&]>().is_ok();
 
         let lifetime = input.parse::<syn::Lifetime>().ok().map(|t| quote! { #t });
 
@@ -894,6 +895,7 @@ impl Parse for MyInput {
         let target: Type = input.parse()?;
 
         Ok(MyInput {
+            has_amp,
             lifetime,
             selectors,
             target,
@@ -983,7 +985,7 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let out = if let Some(target_ident) = target_ident {
         quote! {
-            #target_ident.partial_borrow()
+            &mut #target_ident.partial_borrow()
         }
     } else {
         let target_ident = match &input.target {
@@ -1024,9 +1026,14 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
             }
         }
 
+        let pfx = if input.has_amp {
+            quote! { [& #default_lifetime mut] }
+        } else {
+            quote! { [] }
+        };
 
         out = quote! {
-            #target_ident!{@0 [#target] #out}
+            #target_ident!{@0 #pfx [#target] #out}
         };
         out
     };
