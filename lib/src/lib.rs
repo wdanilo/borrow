@@ -982,7 +982,7 @@ pub trait HasUsageTrackedFields {
 #[derive(Debug)]
 #[cfg_attr(not(usage_tracking_enabled), repr(transparent))]
 pub struct Field<T> {
-    value_no_usage_tracking: T,
+    pub value_no_usage_tracking: T,
     #[cfg(usage_tracking_enabled)]
     usage_tracker: UsageTracker,
 }
@@ -999,7 +999,7 @@ impl<T> Field<T> {
     #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn new(_label: &'static str, value: T) -> Self {
+    pub fn new(_label: &'static str, value: T) -> Self {
         Self::cons(value)
     }
 
@@ -1039,7 +1039,7 @@ impl<T> Field<T> {
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn disable_usage_tracking(&self) {}
+    pub fn disable_usage_tracking(&self) {}
 }
 
 impl<T> Deref for Field<T> {
@@ -1093,25 +1093,40 @@ pub type ClonedField<'s, T> = <T as CloneField<'s>>::Cloned;
 
 impl<'s> CloneField<'s> for Field<Hidden> {
     type Cloned = Hidden;
+    #[cfg(usage_tracking_enabled)]
     fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
         let usage_tracker = self.usage_tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
+    }
+    #[cfg(not(usage_tracking_enabled))]
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+        Field::cons(self.value_no_usage_tracking)
     }
 }
 
 impl<'s, 't, T> CloneField<'s> for Field<&'t T> {
     type Cloned = &'t T;
+    #[cfg(usage_tracking_enabled)]
     fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
         let usage_tracker = self.usage_tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
+    }
+    #[cfg(not(usage_tracking_enabled))]
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+        Field::cons(self.value_no_usage_tracking)
     }
 }
 
 impl<'s, 't, T: 's> CloneField<'s> for Field<&'t mut T> {
     type Cloned = &'s mut T;
+    #[cfg(usage_tracking_enabled)]
     fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
         let usage_tracker = self.usage_tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
+    }
+    #[cfg(not(usage_tracking_enabled))]
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+        Field::cons(self.value_no_usage_tracking)
     }
 }
 
@@ -1253,10 +1268,21 @@ impl<'t, T> Acquire<&'t mut T, Hidden> for AcquireMarker {
     type Rest = &'t mut T;
     #[track_caller]
     #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
     fn acquire(this: Field<&'t mut T>) -> (Field<Hidden>, Field<Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
+        )
+    }
+
+    #[track_caller]
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn acquire(this: Field<&'t mut T>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            Field::cons(this.value_no_usage_tracking)
         )
     }
 }
@@ -1265,10 +1291,21 @@ impl<'t, T> Acquire<&'t T, Hidden> for AcquireMarker {
     type Rest = &'t T;
     #[track_caller]
     #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
     fn acquire(this: Field<&'t T>) -> (Field<Hidden>, Field<Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
+        )
+    }
+
+    #[track_caller]
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn acquire(this: Field<&'t T>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            Field::cons(this.value_no_usage_tracking)
         )
     }
 }
@@ -1277,10 +1314,20 @@ impl Acquire<Hidden, Hidden> for AcquireMarker {
     type Rest = Hidden;
     #[track_caller]
     #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
     fn acquire(this: Field<Hidden>) -> (Field<Hidden>, Field<Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
+        )
+    }
+    #[track_caller]
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn acquire(this: Field<Hidden>) -> (Field<Hidden>, Field<Self::Rest>) {
+        (
+            this.clone_as_hidden(),
+            Field::cons(this.value_no_usage_tracking)
         )
     }
 }
