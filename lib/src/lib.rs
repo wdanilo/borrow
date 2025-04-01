@@ -955,7 +955,7 @@ impl UsageTracker {
 
     fn set_usage(&self, label: &str, borrowed: Usage, used: Usage) {
         let usage = UsageResult { borrowed, used };
-        self.used.borrow_mut().map.insert(label.into(), usage);
+        self.used.borrow_mut().map.push((label.into(), usage));
     }
 }
 
@@ -967,15 +967,15 @@ struct UsageResult {
 
 #[derive(Debug, Default)]
 struct UsageTrackerData {
-    loc: Arc<String>,
-    map: HashMap<String, UsageResult>,
+    loc: String,
+    map: Vec<(String, UsageResult)>,
 }
 
 impl UsageTrackerData {
     #[track_caller]
     fn new() -> Self {
         let call_loc = std::panic::Location::caller();
-        let loc = Arc::new(format!("{}:{}", call_loc.file(), call_loc.line()));
+        let loc = format!("{}:{}", call_loc.file(), call_loc.line());
         let map = default();
         Self { loc, map }
     }
@@ -983,13 +983,9 @@ impl UsageTrackerData {
 
 impl Drop for UsageTrackerData {
     fn drop(&mut self) {
-        let mut required = vec![];
         let mut borrowed_but_not_used = vec![];
         let mut borrowed_as_mut_but_used_as_ref = vec![];
         for (label, usage) in &self.map {
-            if usage.used > Usage::None {
-                required.push((label, usage.used));
-            }
             if usage.borrowed > usage.used {
                 if usage.used == Usage::None {
                     borrowed_but_not_used.push(label)
@@ -998,16 +994,25 @@ impl Drop for UsageTrackerData {
                 }
             }
         }
-        required.sort_by(|a, b| a.0.cmp(b.0));
 
         let mut msg = String::new();
         if !borrowed_but_not_used.is_empty() {
+            borrowed_but_not_used.sort();
             msg.push_str(&format!("\n    Borrowed but not used: {:?}", borrowed_but_not_used));
         }
         if !borrowed_as_mut_but_used_as_ref.is_empty() {
+            borrowed_as_mut_but_used_as_ref.sort();
             msg.push_str(&format!("\n    Borrowed as mut but used as ref: {:?}", borrowed_as_mut_but_used_as_ref));
         }
+
         if !msg.is_empty() {
+            let mut required = vec![];
+            for (label, usage) in &self.map {
+                if usage.used > Usage::None {
+                    required.push((label, usage.used));
+                }
+            }
+            required.sort_by(|a, b| a.0.cmp(b.0));
             let out = required.into_iter().map(|(label, usage)|{
                 match usage {
                     Usage::Ref => label.to_string(),
@@ -1024,7 +1029,6 @@ impl Drop for UsageTrackerData {
 #[derive(Debug)]
 struct FieldUsageTracker {
     label: &'static str,
-    loc: Arc<String>,
     borrowed_usage: Usage,
     usage: Arc<Cell<Usage>>,
     parent: Option<Arc<Cell<Usage>>>,
@@ -1043,18 +1047,6 @@ impl Drop for FieldUsageTracker {
         }
         if !self.disabled.get() {
             if usage < self.borrowed_usage {
-                // let s1 = format!("Warning [{}]: Field '{}' was borrowed as", self.loc, self.label);
-                // let s2 = match self.borrowed_usage {
-                //     Usage::None => "NONE",
-                //     Usage::Ref => "ref",
-                //     Usage::Mut => "mut",
-                // };
-                // let s3 = match usage {
-                //     Usage::None => "was never used",
-                //     Usage::Ref => "was used as ref",
-                //     Usage::Mut => "was used as mut",
-                // };
-                // warning!("{} '{}', but {}.", s1, s2, s3);
                 self.set_parent_as_used(Usage::Mut)
             }
         }
@@ -1071,9 +1063,7 @@ impl FieldUsageTracker {
         disabled: Cell<bool>,
         tracker: Option<UsageTracker>,
     ) -> Self {
-        let call_loc = std::panic::Location::caller();
-        let loc = Arc::new(format!("{}:{}", call_loc.file(), call_loc.line()));
-        Self { label, loc, borrowed_usage, usage, parent, disabled, tracker }
+        Self { label, borrowed_usage, usage, parent, disabled, tracker }
     }
 
     #[track_caller]
@@ -1121,6 +1111,7 @@ impl FieldUsageTracker {
 
 pub trait HasUsageTrackedFields {
     fn disable_field_usage_tracking(&self);
+    fn mark_all_fields_as_used(&self);
 }
 
 // =============
@@ -1188,6 +1179,16 @@ impl<T> Field<T> {
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     pub fn disable_usage_tracking(&self) {}
+
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    pub fn mark_as_used(&self) {
+        self.usage_tracker.mark_as_used(Usage::Mut);
+    }
+
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    pub fn mark_as_used(&self) {}
 }
 
 impl<T> Deref for Field<T> {
@@ -1633,44 +1634,46 @@ mod sandbox {
             self.as_refs_mut().into_split_impl()
         }
     }
-    //
-    // impl<'s, Args, T> borrow::CloneRef<'s> for ExplicitParams<Args, T>
-    // where T: borrow::CloneRef<'s> {
-    //     type Cloned = ExplicitParams<Args, borrow::ClonedRef<'s, T>>;
-    //     fn clone_ref_disabled_usage_tracking(&'s mut self) -> Self::Cloned {
-    //         ExplicitParams::new(self.value.clone_ref_disabled_usage_tracking())
-    //     }
-    // }
 
 
-    // impl<'x, __S__, __Version, __Geometry, __Material, __Mesh, __Scene, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>
-    // borrow::Partial<'x, CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> where
-    //     Self: borrow::CloneRef<'x>,
-    //     borrow::ClonedRef<'x, Self>: IntoPartial<CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>
-    // {
-    //     type Rest = <borrow::ClonedRef<'x, Self> as IntoPartial<CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>>>::Rest;
-    //     #[track_caller]
-    //     #[inline(always)]
-    //     fn split_impl(&'x mut self) -> (CtxRef<__S__, __Version2, __Geometry2, __Material2, __Mesh2, __Scene2>, Self::Rest) {
-    //         use borrow::CloneRef;
-    //         // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
-    //         // we need to disable them.
-    //         let this = self.clone_ref_disabled_usage_tracking();
-    //         this.into_split_impl()
-    //     }
-    // }
-    //
-    //
-    // impl<'x, S, T, T2> IntoPartial<ExplicitParams<S, T2>> for ExplicitParams<S, T>
-    // where T: IntoPartial<ExplicitParams<S, T2>> {
-    //     type Rest = <T as IntoPartial<ExplicitParams<S, T2>>>::Rest;
-    //     #[track_caller]
-    //     #[inline(always)]
-    //     fn into_split_impl(self) -> (ExplicitParams<S, T2>, Self::Rest) {
-    //         self.value.into_split_impl()
-    //     }
-    // }
+
+    impl<'__s__, '__tgt__, 't, T, __Version, __Geometry, __Material, __Mesh, __Scene>
+    CtxRef<Ctx<'t, T>, __Version, __Geometry, __Material, __Mesh, __Scene>
+    where
+        T: Debug,
+        Self: borrow::CloneRef<'__s__>,
+        borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
+            CtxRef<
+                Ctx<'t, T>,
+                borrow::Hidden,
+                &'__tgt__ mut GeometryCtx,
+                borrow::Hidden,
+                borrow::Hidden,
+                borrow::Hidden
+            >
+        >
+    {
+        #[track_caller]
+        #[inline(always)]
+        pub fn extract_geometry2(&'__s__ mut self) -> (
+            borrow::Field<&'__tgt__ mut GeometryCtx>,
+                <borrow::ClonedRef<'__s__, Self> as borrow::IntoPartial<
+                    CtxRef<
+                        Ctx<'t, T>,
+                        borrow::Hidden,
+                        &'__tgt__ mut GeometryCtx,
+                        borrow::Hidden,
+                        borrow::Hidden,
+                        borrow::Hidden
+                    >
+                >>::Rest
+        ) {
+            let split = borrow::IntoPartial::into_split_impl(
+                borrow::CloneRef::clone_ref_disabled_usage_tracking(self)
+            );
+            (split.0.geometry, split.1)
+        }
+    }
 
 
 
@@ -1722,7 +1725,7 @@ pub fn test() {
 
 }
 
-fn test2<'s, 't>(mut ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
+fn test2<'s, 't>(mut ctx: p!(&'t<mut geometry>Ctx<'s, usize>)) {
     {
         // let _y = ctx.extract_geometry();
         // let _y = ctx.extract_version();
@@ -1732,7 +1735,7 @@ fn test2<'s, 't>(mut ctx: p!(&'t<mut *>Ctx<'s, usize>)) {
     }
     println!(">>>");
     test5(p!(&mut ctx));
-    test6(p!(&mut ctx));
+    // test6(p!(&mut ctx));
     // test6(ctx);
     println!("<<<");
     // &*ctx.scene;
