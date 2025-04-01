@@ -280,7 +280,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
         quote! {
             pub struct #ref_ident<__S__, #(#fields_param,)*> {
                 #(#fields_vis #fields_ident: borrow::Field<#fields_param>,)*
-                marker: std::marker::PhantomData<__S__>
+                marker: std::marker::PhantomData<__S__>,
+                usage_tracker: borrow::UsageTracker,
             }
         }
     };
@@ -430,6 +431,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                     #ref_ident {
                         #(#fields_ident: self.#fields_ident.clone_field_disabled_usage_tracking(),)*
                         marker: std::marker::PhantomData,
+                        usage_tracker: borrow::UsageTracker::new(),
                     }
                 }
             }
@@ -540,16 +542,19 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                     Self::Rest
                 ) {
                     use borrow::Acquire;
+                    let usage_tracker = borrow::UsageTracker::new();
                     #(let (#fields_ident, #fields_rest_ident) =
-                        borrow::AcquireMarker::acquire(self.#fields_ident);)*
+                        borrow::AcquireMarker::acquire(self.#fields_ident, usage_tracker.clone());)*
                     (
                         #ref_ident {
                             #(#fields_ident,)*
-                            marker: std::marker::PhantomData
+                            marker: std::marker::PhantomData,
+                            usage_tracker
                         },
                         #ref_ident {
                             #(#fields_ident: #fields_rest_ident,)*
-                            marker: std::marker::PhantomData
+                            marker: std::marker::PhantomData,
+                            usage_tracker: borrow::UsageTracker::new()
                         }
                     )
                 }
@@ -789,14 +794,18 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             #[track_caller]
             #[inline(always)]
             fn as_refs_mut<'__s>(&'__s mut self) -> Self::Target<'__s> {
+                let usage_tracker = borrow::UsageTracker::new();
                 let struct_ref = #ref_ident {
                     #(
                         #fields_ident: borrow::Field::new(
                             stringify!(#fields_ident),
-                            &mut self.#fields_ident
+                            borrow::Usage::Mut,
+                            &mut self.#fields_ident,
+                            usage_tracker.clone(),
                         ),
                     )*
                     marker: std::marker::PhantomData,
+                    usage_tracker
                 };
                 borrow::HasUsageTrackedFields::disable_field_usage_tracking(&struct_ref);
                 struct_ref
