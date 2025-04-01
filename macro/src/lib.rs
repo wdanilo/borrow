@@ -783,7 +783,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                     #(
                         #fields_ident: borrow::Field::new(
                             stringify!(#fields_ident),
-                            borrow::Usage::Mut,
+                            Some(borrow::Usage::Mut),
                             &mut self.#fields_ident,
                             usage_tracker.clone(),
                         ),

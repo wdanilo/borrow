@@ -889,13 +889,34 @@ fn default<T: Default>() -> T {
 // === Logging ===
 // ===============
 
+macro_rules! warning {
+    ($($ts:tt)*) => {
+        warning(&format!($($ts)*));
+    };
+}
+
+fn warning(msg: &str) {
+    if inc_and_check_warning_count() {
+        warning_no_count_check(msg)
+    }
+}
+
+fn warning_no_count_check(msg: &str) {
+    #[cfg(feature = "wasm")]
+    web_sys::console::warn_1(&msg.into());
+    #[cfg(not(feature = "wasm"))]
+    eprintln!("{msg}");
+}
+
+/// We don't want to flood users with warnings, especially in interactive apps, where warnings can
+/// be emitted per frame.
 const MAX_WARNING_COUNT: usize = 100;
 
 thread_local! {
     static WARNING_COUNT: Cell<usize> = Cell::new(0);
 }
 
-fn inc_warning_count() -> bool {
+fn inc_and_check_warning_count() -> bool {
     WARNING_COUNT.with(|count| {
         let new_count = count.get() + 1;
         count.set(new_count);
@@ -910,65 +931,44 @@ fn inc_warning_count() -> bool {
     })
 }
 
-fn warning(msg: &str) {
-    if inc_warning_count() {
-        warning_no_count_check(msg)
-    }
-}
-
-fn warning_no_count_check(msg: &str) {
-    #[cfg(feature = "wasm")]
-    web_sys::console::warn_1(&msg.into());
-    #[cfg(not(feature = "wasm"))]
-    eprintln!("{msg}");
-}
-
-macro_rules! warning {
-    ($($ts:tt)*) => {
-        warning(&format!($($ts)*));
-    };
-}
-
 // ====================
 // === UsageTracker ===
 // ====================
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialOrd, PartialEq, Ord)]
+pub type OptUsage = Option<Usage>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialOrd, PartialEq, Ord)]
 pub enum Usage {
-    #[default]
-    None,
     Ref,
     Mut
 }
 
 #[derive(Clone, Debug)]
 pub struct UsageTracker {
-    used: Arc<std::cell::RefCell<UsageTrackerData>>,
+    data: Arc<std::cell::RefCell<UsageTrackerData>>,
 }
 
 impl UsageTracker {
     #[track_caller]
     pub fn new() -> Self {
-        let used = Arc::new(std::cell::RefCell::new(UsageTrackerData::new()));
-        Self { used }
+        Self { data: Arc::new(std::cell::RefCell::new(UsageTrackerData::new())) }
     }
 
-    fn set_usage(&self, label: &str, borrowed: Usage, used: Usage) {
-        let usage = UsageResult { borrowed, used };
-        self.used.borrow_mut().map.push((label.into(), usage));
+    fn set_usage(&self, label: &'static str, usage: UsageResult) {
+        self.data.borrow_mut().map.push((label, usage));
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 struct UsageResult {
-    borrowed: Usage,
-    used: Usage,
+    requested: OptUsage,
+    needed: OptUsage,
 }
 
 #[derive(Debug, Default)]
 struct UsageTrackerData {
     loc: String,
-    map: Vec<(String, UsageResult)>,
+    map: Vec<(&'static str, UsageResult)>,
 }
 
 impl UsageTrackerData {
@@ -986,8 +986,8 @@ impl Drop for UsageTrackerData {
         let mut borrowed_but_not_used = vec![];
         let mut borrowed_as_mut_but_used_as_ref = vec![];
         for (label, usage) in &self.map {
-            if usage.borrowed > usage.used {
-                if usage.used == Usage::None {
+            if usage.requested > usage.needed {
+                if usage.needed == OptUsage::None {
                     borrowed_but_not_used.push(label)
                 } else {
                     borrowed_as_mut_but_used_as_ref.push(label)
@@ -1008,20 +1008,24 @@ impl Drop for UsageTrackerData {
         if !msg.is_empty() {
             let mut required = vec![];
             for (label, usage) in &self.map {
-                if usage.used > Usage::None {
-                    required.push((label, usage.used));
+                if let Some(usage2) = usage.needed {
+                    required.push((label, usage2));
                 }
             }
-            required.sort_by(|a, b| a.0.cmp(b.0));
-            let out = required.into_iter().map(|(label, usage)|{
-                match usage {
-                    Usage::Ref => label.to_string(),
-                    Usage::Mut => format!("mut {label}"),
-                    _ => panic!()
-                }
-            }).collect::<Vec<_>>();
-            msg.push_str(&format!("\n    To fix the issue, borrow it as '&<{}>'", out.join(", ")));
-            warning!("Warning [{}]:{}", self.loc, msg);
+            // If required is empty, we probably are in a conditional code, where the borrow was not
+            // used. Otherwise, Clippy will complain about unused variable, so we don't need to
+            // report it.
+            if !required.is_empty() {
+                required.sort_by(|a, b| a.0.cmp(b.0));
+                let out = required.into_iter().map(|(label, usage)| {
+                    match usage {
+                        Usage::Ref => label.to_string(),
+                        Usage::Mut => format!("mut {label}"),
+                    }
+                }).collect::<Vec<_>>();
+                msg.push_str(&format!("\n    To fix the issue, borrow it as '&<{}>'", out.join(", ")));
+                warning!("Warning [{}]:{}", self.loc, msg);
+            }
         }
     }
 }
@@ -1029,9 +1033,9 @@ impl Drop for UsageTrackerData {
 #[derive(Debug)]
 struct FieldUsageTracker {
     label: &'static str,
-    borrowed_usage: Usage,
-    usage: Arc<Cell<Usage>>,
-    parent: Option<Arc<Cell<Usage>>>,
+    requested_usage: OptUsage,
+    needed_usage: Arc<Cell<OptUsage>>,
+    parent: Option<Arc<Cell<OptUsage>>>,
     disabled: Cell<bool>,
     tracker: Option<UsageTracker>,
 }
@@ -1039,66 +1043,64 @@ struct FieldUsageTracker {
 impl Drop for FieldUsageTracker {
     fn drop(&mut self) {
         if !self.disabled.get() {
-            self.tracker.as_mut().map(|t| t.set_usage(self.label, self.borrowed_usage, self.usage.get()));
-        }
-        let usage = self.usage.get();
-        if usage != Usage::None {
-            self.set_parent_as_used(usage)
-        }
-        if !self.disabled.get() {
-            if usage < self.borrowed_usage {
-                self.set_parent_as_used(Usage::Mut)
+            let requested = self.requested_usage;
+            let needed = self.needed_usage.get();
+            let usage = UsageResult { requested, needed };
+            self.tracker.as_mut().map(|t| t.set_usage(self.label, usage));
+
+            if needed < requested {
+                // We don't want to report error on parent unless children are fixed.
+                self.register_parent_usage(Some(Usage::Mut))
             }
+        }
+        let usage = self.needed_usage.get();
+        if usage.is_some() {
+            self.register_parent_usage(usage)
         }
     }
 }
 
 impl FieldUsageTracker {
-    #[track_caller]
     fn new(
         label: &'static str,
-        borrowed_usage: Usage,
-        usage: Arc<Cell<Usage>>,
-        parent: Option<Arc<Cell<Usage>>>,
+        borrowed_usage: OptUsage,
+        usage: Arc<Cell<OptUsage>>,
+        parent: Option<Arc<Cell<OptUsage>>>,
         disabled: Cell<bool>,
         tracker: Option<UsageTracker>,
     ) -> Self {
-        Self { label, borrowed_usage, usage, parent, disabled, tracker }
+        Self { label, requested_usage: borrowed_usage, needed_usage: usage, parent, disabled, tracker }
     }
 
-    #[track_caller]
-    fn new_child(&self, borrowed_usage: Usage, tracker: Option<UsageTracker>) -> Self {
+    fn new_child(&self, borrowed_usage: OptUsage, tracker: Option<UsageTracker>) -> Self {
         let used = Default::default();
-        let parent = Some(self.usage.clone());
+        let parent = Some(self.needed_usage.clone());
         Self::new(self.label, borrowed_usage, used, parent, default(), tracker)
     }
 
-    #[track_caller]
     fn new_child_disabled(&self) -> Self {
         let used = Default::default();
-        let parent = Some(self.usage.clone());
-        Self::new(self.label, Usage::Mut, used, parent, Cell::new(true), None)
+        let parent = Some(self.needed_usage.clone());
+        Self::new(self.label, Some(Usage::Mut), used, parent, Cell::new(true), None)
     }
 
-    #[track_caller]
     fn clone_disabled(&self) -> Self {
-        Self::new(self.label, self.borrowed_usage.clone(), self.usage.clone(), self.parent.clone(), Cell::new(true), None)
+        Self::new(self.label, self.requested_usage.clone(), self.needed_usage.clone(), self.parent.clone(), Cell::new(true), None)
     }
 
-    #[track_caller]
     fn new_same_label_used_as_mut(&self) -> Self {
-        Self::new(self.label, self.borrowed_usage.clone(), Arc::new(Cell::new(Usage::Mut)), None, default(), None)
+        Self::new(self.label, self.requested_usage.clone(), Arc::new(Cell::new(Some(Usage::Mut))), None, default(), None)
     }
 
-    fn mark_as_used(&self, usage: Usage) {
-        self.usage.set(self.usage.get().max(usage));
+    fn register_usage(&self, usage: OptUsage) {
+        self.needed_usage.set(self.needed_usage.get().max(usage));
     }
 
     fn disable(&self) {
         self.disabled.set(true);
     }
 
-    fn set_parent_as_used(&self, usage: Usage) {
+    fn register_parent_usage(&self, usage: OptUsage) {
         if let Some(parent) = self.parent.as_ref() {
             parent.set(parent.get().max(usage));
         }
@@ -1127,43 +1129,37 @@ pub struct Field<T> {
 }
 
 impl<T> Field<T> {
-    #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    pub fn new(label: &'static str, borrowed_usage: Usage, value: T, usage_tracker: UsageTracker) -> Self {
+    pub fn new(label: &'static str, borrowed_usage: OptUsage, value: T, usage_tracker: UsageTracker) -> Self {
         let usage_tracker = FieldUsageTracker::new(label, borrowed_usage, default(), None, default(), Some(usage_tracker));
         Self::cons(value, usage_tracker)
     }
 
-    #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     pub fn new(_label: &'static str, value: T) -> Self {
         Self::cons(value)
     }
 
-    #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     fn cons(value_no_usage_tracking: T, usage_tracker: FieldUsageTracker) -> Self {
         Self { value_no_usage_tracking, usage_tracker }
     }
 
-    #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn cons(value_no_usage_tracking: T) -> Self {
         Self { value_no_usage_tracking }
     }
 
-    #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     fn clone_as_hidden(&self) -> Field<Hidden> {
         Field::cons(Hidden, self.usage_tracker.new_same_label_used_as_mut())
     }
 
-    #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn clone_as_hidden(&self) -> Field<Hidden> {
@@ -1183,7 +1179,7 @@ impl<T> Field<T> {
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     pub fn mark_as_used(&self) {
-        self.usage_tracker.mark_as_used(Usage::Mut);
+        self.usage_tracker.register_usage(Some(Usage::Mut));
     }
 
     #[inline(always)]
@@ -1196,7 +1192,7 @@ impl<T> Deref for Field<T> {
     #[inline(always)]
     fn deref(&self) -> &T {
         #[cfg(usage_tracking_enabled)]
-        self.usage_tracker.mark_as_used(Usage::Ref);
+        self.usage_tracker.register_usage(Some(Usage::Ref));
         &self.value_no_usage_tracking
     }
 }
@@ -1205,7 +1201,7 @@ impl<T> DerefMut for Field<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         #[cfg(usage_tracking_enabled)]
-        self.usage_tracker.mark_as_used(Usage::Mut);
+        self.usage_tracker.register_usage(Some(Usage::Mut));
         &mut self.value_no_usage_tracking
     }
 }
@@ -1373,7 +1369,6 @@ pub type RefWithFields<T, F> = <T as AsRefWithFields<F>>::Output;
 //     ClonedRef<'x, Self>: IntoPartial<ExplicitParams<S, T2>>
 // {
 //     type Rest = <ClonedRef<'x, Self> as IntoPartial<ExplicitParams<S, T2>>>::Rest;
-//     #[track_caller]
 //     #[inline(always)]
 //     fn split_impl(&'x mut self) -> (ExplicitParams<S, T2>, Self::Rest) {
 //         // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
@@ -1387,7 +1382,6 @@ pub type RefWithFields<T, F> = <T as AsRefWithFields<F>>::Output;
 // impl<'x, S, T, T2> IntoPartial<ExplicitParams<S, T2>> for ExplicitParams<S, T>
 // where T: IntoPartial<ExplicitParams<S, T2>> {
 //     type Rest = <T as IntoPartial<ExplicitParams<S, T2>>>::Rest;
-//     #[track_caller]
 //     #[inline(always)]
 //     fn into_split_impl(self) -> (ExplicitParams<S, T2>, Self::Rest) {
 //         self.value.into_split_impl()
@@ -1415,7 +1409,6 @@ pub trait Acquire<This, Target> {
 
 impl<'t, T> Acquire<&'t mut T, Hidden> for AcquireMarker {
     type Rest = &'t mut T;
-    #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     fn acquire(this: Field<&'t mut T>, _usage_tracker: UsageTracker) -> (Field<Hidden>, Field<Self::Rest>) {
@@ -1425,7 +1418,6 @@ impl<'t, T> Acquire<&'t mut T, Hidden> for AcquireMarker {
         )
     }
 
-    #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn acquire(this: Field<&'t mut T>) -> (Field<Hidden>, Field<Self::Rest>) {
@@ -1438,7 +1430,6 @@ impl<'t, T> Acquire<&'t mut T, Hidden> for AcquireMarker {
 
 impl<'t, T> Acquire<&'t T, Hidden> for AcquireMarker {
     type Rest = &'t T;
-    #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     fn acquire(this: Field<&'t T>, _usage_tracker: UsageTracker) -> (Field<Hidden>, Field<Self::Rest>) {
@@ -1448,7 +1439,6 @@ impl<'t, T> Acquire<&'t T, Hidden> for AcquireMarker {
         )
     }
 
-    #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn acquire(this: Field<&'t T>) -> (Field<Hidden>, Field<Self::Rest>) {
@@ -1461,7 +1451,6 @@ impl<'t, T> Acquire<&'t T, Hidden> for AcquireMarker {
 
 impl Acquire<Hidden, Hidden> for AcquireMarker {
     type Rest = Hidden;
-    #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     fn acquire(this: Field<Hidden>, _usage_tracker: UsageTracker) -> (Field<Hidden>, Field<Self::Rest>) {
@@ -1470,7 +1459,6 @@ impl Acquire<Hidden, Hidden> for AcquireMarker {
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
         )
     }
-    #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn acquire(this: Field<Hidden>) -> (Field<Hidden>, Field<Self::Rest>) {
@@ -1484,14 +1472,12 @@ impl Acquire<Hidden, Hidden> for AcquireMarker {
 impl<'t, 'y, T> Acquire<&'t mut T, &'y mut T> for AcquireMarker
 where 't: 'y {
     type Rest = Hidden;
-    #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     fn acquire(this: Field<&'t mut T>, usage_tracker: UsageTracker) -> (Field<&'y mut T>, Field<Self::Rest>) {
         let rest = this.clone_as_hidden();
-        (Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child(Usage::Mut, Some(usage_tracker))), rest)
+        (Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child(Some(Usage::Mut), Some(usage_tracker))), rest)
     }
-    #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn acquire(this: Field<&'t mut T>) -> (Field<&'y mut T>, Field<Self::Rest>) {
@@ -1503,16 +1489,14 @@ where 't: 'y {
 impl<'t, 'y, T> Acquire<&'t mut T, &'y T> for AcquireMarker
 where 't: 'y {
     type Rest = &'t T;
-    #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     fn acquire(this: Field<&'t mut T>, usage_tracker: UsageTracker) -> (Field<&'y T>, Field<Self::Rest>) {
         (
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child(Usage::Ref, Some(usage_tracker))),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child(Some(Usage::Ref), Some(usage_tracker))),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
         )
     }
-    #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn acquire(this: Field<&'t mut T>) -> (Field<&'y T>, Field<Self::Rest>) {
@@ -1523,16 +1507,14 @@ where 't: 'y {
 impl<'t, 'y, T> Acquire<&'t T, &'y T> for AcquireMarker
 where 't: 'y {
     type Rest = &'t T;
-    #[track_caller]
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     fn acquire(this: Field<&'t T>, usage_tracker: UsageTracker) -> (Field<&'y T>, Field<Self::Rest>) {
         (
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child(Usage::Ref, Some(usage_tracker))),
+            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child(Some(Usage::Ref), Some(usage_tracker))),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
         )
     }
-    #[track_caller]
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn acquire(this: Field<&'t T>) -> (Field<&'y T>, Field<Self::Rest>) {
@@ -1634,48 +1616,6 @@ mod sandbox {
             self.as_refs_mut().into_split_impl()
         }
     }
-
-
-
-    impl<'__s__, '__tgt__, 't, T, __Version, __Geometry, __Material, __Mesh, __Scene>
-    CtxRef<Ctx<'t, T>, __Version, __Geometry, __Material, __Mesh, __Scene>
-    where
-        T: Debug,
-        Self: borrow::CloneRef<'__s__>,
-        borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
-            CtxRef<
-                Ctx<'t, T>,
-                borrow::Hidden,
-                &'__tgt__ mut GeometryCtx,
-                borrow::Hidden,
-                borrow::Hidden,
-                borrow::Hidden
-            >
-        >
-    {
-        #[track_caller]
-        #[inline(always)]
-        pub fn extract_geometry2(&'__s__ mut self) -> (
-            borrow::Field<&'__tgt__ mut GeometryCtx>,
-                <borrow::ClonedRef<'__s__, Self> as borrow::IntoPartial<
-                    CtxRef<
-                        Ctx<'t, T>,
-                        borrow::Hidden,
-                        &'__tgt__ mut GeometryCtx,
-                        borrow::Hidden,
-                        borrow::Hidden,
-                        borrow::Hidden
-                    >
-                >>::Rest
-        ) {
-            let split = borrow::IntoPartial::into_split_impl(
-                borrow::CloneRef::clone_ref_disabled_usage_tracking(self)
-            );
-            (split.0.geometry, split.1)
-        }
-    }
-
-
 
 }
 
