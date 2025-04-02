@@ -212,11 +212,11 @@
 //! # pub struct Edge;
 //! # pub struct Group;
 //! #
-//! pub struct GraphRef<__S__, Nodes, Edges, Groups> {
+//! pub struct GraphRef<__Self__, Nodes, Edges, Groups> {
 //!     pub nodes:  Nodes,
 //!     pub edges:  Edges,
 //!     pub groups: Groups,
-//!     marker:     std::marker::PhantomData<__S__>,
+//!     marker:     std::marker::PhantomData<__Self__>,
 //! }
 //!
 //! impl Graph {
@@ -1045,6 +1045,95 @@
 //!
 //! # Unused borrows tracking
 //!
+//! It's very easy to maintain the minimum set of borrowed fields for all of your functions,
+//! especially after refactoring. That's why this crate provides a way to track unused borrows.
+//! Unlike standard Rust and Clippy lints, unused partial borrows diagnostic is performed at
+//! runtime and adds a significant performance overhead to every borrow. You can disable it
+//! and completely optimize away either by using the release build mode or by setting the
+//! `no_usage_tracking` feature. Alternatively, you can enforce it in release mode by using the
+//! `usage_tracking` feature.
+//!
+//! Consider the following code:
+//!
+//! ```
+//! # use std::vec::Vec;
+//! # use borrow::partial as p;
+//! # use borrow::traits::*;
+//! struct Node;
+//! struct Edge;
+//! struct Group;
+//!
+//! #[derive(borrow::Partial, Default)]
+//! #[module(crate)]
+//! struct Graph {
+//!     pub nodes:  Vec<Node>,
+//!     pub edges:  Vec<Edge>,
+//!     pub groups: Vec<Group>,
+//! }
+//!
+//! fn main() {
+//!     let mut graph = Graph::default();
+//!     pass1(p!(&mut graph));
+//! }
+//!
+//! fn pass1(mut graph: p!(&<mut *> Graph)) {
+//!     pass2(p!(&mut graph));
+//! }
+//!
+//! fn pass2(mut graph: p!(&<mut nodes, edges> Graph)) {
+//!     let _ = &*graph.nodes;
+//! }
+//! ```
+//!
+//! When running it, you'll see the following output in stderr:
+//!
+//! ```text
+//! Warning [lib/src/lib.rs:19]:
+//!     Borrowed but not used: edges.
+//!     Borrowed as mut but used as ref: nodes.
+//!     To fix the issue, use: &<nodes>.
+//!
+//! Warning [lib/src/lib.rs:15]:
+//!     Borrowed but not used: groups.
+//!     To fix the issue, use: &<mut edges, mut nodes>.
+//! ```
+//!
+//! After fixing the code, the code works without warnings:
+//!
+//! ```
+//! # use std::vec::Vec;
+//! # use borrow::partial as p;
+//! # use borrow::traits::*;
+//! struct Node;
+//! struct Edge;
+//! struct Group;
+//!
+//! #[derive(borrow::Partial, Default)]
+//! #[module(crate)]
+//! struct Graph {
+//!     pub nodes:  Vec<Node>,
+//!     pub edges:  Vec<Edge>,
+//!     pub groups: Vec<Group>,
+//! }
+//!
+//! fn main() {
+//!     let mut graph = Graph::default();
+//!     pass1(p!(&mut graph));
+//! }
+//!
+//! fn pass1(mut graph: p!(&<mut edges, nodes> Graph)) {
+//!     let _ = &mut *graph.edges; // Simulate mut usage of edges.
+//!     pass2(p!(&mut graph));
+//! }
+//!
+//! fn pass2(mut graph: p!(&<nodes> Graph)) {
+//!     let _ = &*graph.nodes; // Simulate ref usage of nodes.
+//! }
+//! ```
+//!
+//! There are, however, two special cases we should consider. The first one is when we pass a
+//! partial borrow to a trait method that we consider an interface.
+//!
 //! <br/>
 //! <br/>
 
@@ -1145,7 +1234,6 @@ impl<T> Field<T> {
         Self::cons(value, usage_tracker)
     }
 
-    // FIXME: USageTracker in release
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     pub fn new(_label: Label, _requested_usage: OptUsage, value: T, _tracker: UsageTracker) -> Self {
@@ -1560,32 +1648,6 @@ impl<'s, T, Target> borrow::Partial<'s, Target> for T where
 // === GEN ===
 // ===========
 
-extern crate self as borrow;
-
-mod sandbox {
-
-    use std::fmt::Debug;
-
-    pub struct GeometryCtx {}
-    pub struct MaterialCtx {}
-    pub struct MeshCtx {}
-    pub struct SceneCtx {}
-
-    #[derive(borrow::Partial)]
-    #[module(crate)]
-    pub struct Ctx<'t, T: Debug> {
-        pub version: &'t T,
-        pub geometry: GeometryCtx,
-        pub material: MaterialCtx,
-        pub mesh: MeshCtx,
-        pub scene: SceneCtx,
-    }
-
-
-
-}
-
-
 #[doc(hidden)]
 #[macro_export]
 macro_rules! field {
@@ -1593,93 +1655,32 @@ macro_rules! field {
     ($s:ty, $n:tt, $($ts:tt)+) => { $($ts)+ borrow::ItemAt<borrow::$n, borrow::Fields<$s>> };
 }
 
-use sandbox::*;
+extern crate self as borrow;
 
 use borrow::partial as p;
 
+struct Node;
+struct Edge;
+struct Group;
 
-pub struct AllFieldsUsed<T> {
-    pub value: T,
-}
-
-// pub trait IntoPartial<Target> {
-//     type Rest;
-//     fn into_split_impl(self) -> (Target, Self::Rest);
-// }
-
-
-impl<Target, T> IntoPartial<AllFieldsUsed<Target>> for T
-where T: IntoPartial<Target> {
-    type Rest = <T as IntoPartial<Target>>::Rest;
-    fn into_split_impl(self) -> (AllFieldsUsed<Target>, Self::Rest) {
-        let (target, rest) = self.into_split_impl();
-        (
-            AllFieldsUsed { value: target },
-            rest
-        )
-    }
-}
-
-// fn test7(_ctx: Ctx!(@0 [Ctx<'_, usize>] * [&'_])) {
-// }
-
-impl<'t, 's> p!('t<mut *>Ctx<'s, usize>) {
-
+#[derive(borrow::Partial, Default)]
+#[module(crate)]
+struct Graph {
+  pub nodes:  Vec<Node>,
+  pub edges:  Vec<Edge>,
+  pub groups: Vec<Group>,
 }
 
 pub fn test() {
-    let version: usize = 0;
-    let mut ctx = Ctx {
-        version: &version,
-        geometry: GeometryCtx {},
-        material: MaterialCtx {},
-        mesh: MeshCtx {},
-        scene: SceneCtx {},
-    };
-
-    // ctx_ref_mut.disable_field_usage_tracking();
-
-    // test2(&mut ctx_ref_mut.partial_borrow_or_eq());
-    test2(p!(&mut ctx));
-
-
-    // pub trait CloneRef<'s> {
-    //     type Cloned;
-    //     fn clone_mut(this: &'s mut Self) -> Self::Cloned;
-    // }
-    // type Cloned<'s, T> = <T as CloneRef<'s>>::Cloned;
-
-
-
-
+    let mut graph = Graph::default();
+    pass1(p!(&mut graph));
 }
 
-fn test2<'s, 't>(ctx: p!(&'t<mut geometry>Ctx<'s, usize>)) {
-    {
-        // let _y = ctx.extract_geometry();
-        // let _y = ctx.extract_version();
-    }
-    {
-        // let _x = ctx.split::<p!(&<'_ mut geometry>Ctx<'s, usize>)>();
-    }
-    println!(">>>");
-    // test5(p!(&mut ctx));
-    test5(&mut ctx.partial_borrow());
-    // test6(p!(&mut ctx));
-    // test6(ctx);
-    println!("<<<");
-    // &*ctx.scene;
-
+fn pass1(mut graph: p!(&<mut edges, nodes> Graph)) {
+    let _ = &mut *graph.edges; // Simulate mut usage of edges.
+    pass2(p!(&mut graph));
 }
 
-fn test5<'t>(_ctx: p!(_&<geometry>Ctx<'_, usize>)) {
-    // let _ = &*_ctx.geometry;
-    println!("yo")
+fn pass2(mut graph: p!(&<nodes> Graph)) {
+    let _ = &*graph.nodes; // Simulate ref usage of nodes.
 }
-
-fn _test6<'t>(_ctx: p!(&'t<mut *>Ctx<'_, usize>)) {
-    let _ = &mut *_ctx.scene;
-    println!("yo")
-}
-
-

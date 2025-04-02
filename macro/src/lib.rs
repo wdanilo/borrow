@@ -558,18 +558,17 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
     // ```
     // #[allow(non_camel_case_types)]
-    // impl<'__a__, __S__,
-    //     __Version, __Geometry, __Material, __Mesh, __Scene,
-    //     __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>
-    // borrow::Partial<'__a__, CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
+    // impl<'__a__, __S__, __Target__,
+    //     __Version, __Geometry, __Material, __Mesh, __Scene>
+    // borrow::Partial<'__a__, __Target__>
     // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> where
     //     Self: borrow::CloneRef<'__a__>,
-    //     borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
+    //     borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<__Target__>
     // {
-    //     type Rest = <borrow::ClonedRef<'__a__, Self> as borrow::IntoPartial<CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>>::Rest;
+    //     type Rest = <borrow::ClonedRef<'__a__, Self> as borrow::IntoPartial<__Target__>>::Rest;
     //     #[track_caller]
     //     #[inline(always)]
-    //     fn split_impl(&'__a__ mut self) -> (CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>, Self::Rest) {
+    //     fn split_impl(&'__a__ mut self) -> (__Target__, Self::Rest) {
     //         use borrow::CloneRef;
     //         use borrow::IntoPartial;
     //         // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
@@ -580,21 +579,18 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // }
     // ```
     out.push({
-        let fields_param_target = fields_param.iter().map(|i| {
-            Ident::new(&format!("{i}{}", internal("Target")), i.span())
-        }).collect_vec();
         quote! {
             #[allow(non_camel_case_types)]
-            impl<'__a__, __S__, #(#fields_param,)* #(#fields_param_target,)*>
-            borrow::Partial<'__a__, #ref_ident<__S__, #(#fields_param_target,)*>>
+            impl<'__a__, __S__, __Target__, #(#fields_param,)*>
+            borrow::Partial<'__a__, __Target__>
             for #ref_ident<__S__, #(#fields_param,)*> where
                 Self: borrow::CloneRef<'__a__>,
-                borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<#ref_ident<__S__, #(#fields_param_target,)*>>
+                borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<__Target__>
             {
-                type Rest = <borrow::ClonedRef<'__a__, Self> as borrow::IntoPartial<#ref_ident<__S__, #(#fields_param_target,)*>>>::Rest;
+                type Rest = <borrow::ClonedRef<'__a__, Self> as borrow::IntoPartial<__Target__>>::Rest;
                 #[track_caller]
                 #[inline(always)]
-                fn split_impl(&'__a__ mut self) -> (#ref_ident<__S__, #(#fields_param_target,)*>, Self::Rest) {
+                fn split_impl(&'__a__ mut self) -> (__Target__, Self::Rest) {
                     use borrow::CloneRef;
                     use borrow::IntoPartial;
                     // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
