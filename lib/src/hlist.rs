@@ -100,6 +100,7 @@ pub type SetItemAtResult<T, N, Item> = <T as SetItemAt<N, Item>>::Result;
 // === Macros ===
 // ==============
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! HList {
     () => { $crate::hlist::Nil };
@@ -108,6 +109,7 @@ macro_rules! HList {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! hlist {
     () => { $crate::hlist::Nil };
@@ -119,6 +121,7 @@ macro_rules! hlist {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! hlist_pat {
     () => { $crate::hlist::Nil };

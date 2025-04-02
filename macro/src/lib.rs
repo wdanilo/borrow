@@ -8,6 +8,9 @@ use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Type};
 use itertools::Itertools;
 use proc_macro2::TokenStream;
 use proc_macro2::Span;
+use syn::Token;
+use syn::parse::Parse;
+use syn::parse::ParseStream;
 
 // =============
 // === Utils ===
@@ -116,32 +119,9 @@ fn meta_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     // === Ctx 3 ===
 
-    let has_field_for_struct = {
-        let impls = fields.iter().enumerate().map(|(i, field)| {
-            let field_ident = &field.ident;
-            let field_ty = &field.ty;
-            let n = Ident::new(&format!("N{i}"), field.ident.as_ref().unwrap().span());
-            quote! {
-                impl<#params> borrow::HasField<borrow::Str!(#field_ident)>
-                for #ident<#params>
-                where #bounds {
-                    type Type = #field_ty;
-                    type Index = borrow::hlist::#n;
-                    #[inline(always)]
-                    fn take_field(self) -> Self::Type {
-                        self.#field_ident
-                    }
-                }
-            }
-        }).collect_vec();
-        quote! { #(#impls)* }
-    };
-
-
     let out = quote! {
         #has_fields_for_struct
         #has_fields_ext_for_struct
-        #has_field_for_struct
     };
 
     out.into()
@@ -273,7 +253,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //     pub material: borrow::Field<__Material>,
     //     pub mesh: borrow::Field<__Mesh>,
     //     pub scene: borrow::Field<__Scene>,
-    //     pub marker: std::marker::PhantomData<__S__>
+    //     pub marker: std::marker::PhantomData<__S__>,
+    //     pub usage_tracker: borrow::UsageTracker,
     // }
     // ```
     let ref_struct_def = {
@@ -307,8 +288,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // }
     // pub use CtxMacro as Ctx;
     // ```
-    let xx = ({
-    // out.push({
+    out.push({
         fn matcher(i: usize) -> Ident {
             Ident::new(&format!("t{i}"), Span::call_site())
         }
@@ -318,24 +298,32 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
         let init_rule = {
             let all_empty = (0..fields_ident.len()).map(|_| quote!{[]}).collect_vec();
             quote! {
-                (@0 $pfx:tt $s:tt $($ts:tt)*) => { #path::#ident! { @1 $pfx $s #(#all_empty)* $($ts)* } };
+                (@0 $pfx:tt $sfx:tt $s:tt $($ts:tt)*) => {
+                    #path::#ident! { @1 $pfx $sfx $s #(#all_empty)* $($ts)* }
+                };
             }
         };
         let field_rules = fields_ident.iter().enumerate().map(|(i, field)| {
             let mut results = def_results.clone();
             results[i] = quote! {$n};
             quote! {
-                (@1 $pfx:tt $s:tt #(#matchers)* #field $n:tt $($ts:tt)*) => { #path::#ident! { @1 $pfx $s #(#results)* $($ts)* } };
+                (@1 $pfx:tt $sfx:tt $s:tt #(#matchers)* #field $n:tt $($ts:tt)*) => {
+                    #path::#ident! { @1 $pfx $sfx $s #(#results)* $($ts)* }
+                };
             }
         });
         let star_rule = {
             let all_n_results = (0..fields_ident.len()).map(|_| quote!{$n}).collect_vec();
             quote! {
-                (@1 $pfx:tt $s:tt #(#matchers)* * $n:tt $($ts:tt)*) => { #path::#ident! { @1 $pfx $s #(#all_n_results)*  $($ts)* } };
+                (@1 $pfx:tt $sfx:tt $s:tt #(#matchers)* * $n:tt $($ts:tt)*) => {
+                    #path::#ident! { @1 $pfx $sfx $s #(#all_n_results)*  $($ts)* }
+                };
             }
         };
         let production = {
-            let matchers_exp = (0..fields_ident.len()).map(matcher).map(|t| quote!{[$($#t:tt)*]}).collect_vec();
+            let matchers_exp = (0..fields_ident.len()).map(matcher).map(|t|
+                quote!{[$($#t:tt)*]}
+            ).collect_vec();
             let fields = def_results.iter().enumerate().map(|(i, t)| {
                 let n = Ident::new(&format!("N{i}"), Span::call_site());
                 quote! {
@@ -343,8 +331,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 }
             }).collect_vec();
             quote! {
-                (@1 [$($pfx:tt)*] [$s:ty] #(#matchers_exp)* ) => {
-                    $($pfx)* #path::#ref_ident<$s, #(#fields,)*>
+                (@1 [$($pfx:tt)*] [$($sfx:tt)*] [$s:ty] #(#matchers_exp)* ) => {
+                    $($pfx)* #path::#ref_ident<$s, #(#fields,)*> $($sfx)*
                 };
             }
         };
@@ -359,9 +347,6 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             pub use #macro_ident as #ident;
         }
     });
-
-    // println!("{}", xx);
-    out.push(xx);
 
     // Generates:
     //
@@ -386,6 +371,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
     // Generates:
     //
+    // ```
     // impl<'__s__, __S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::CloneRef<'__s__>
     // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
     // where
@@ -412,9 +398,11 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //             mesh: self.mesh.clone_field_disabled_usage_tracking(),
     //             scene: self.scene.clone_field_disabled_usage_tracking(),
     //             marker: std::marker::PhantomData,
+    //             usage_tracker: borrow::UsageTracker::new(),
     //         }
     //     }
     // }
+    // ```
     out.push(
         quote! {
             impl<'__s__, __S__, #(#fields_param,)*> borrow::CloneRef<'__s__>
@@ -443,40 +431,41 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // ```
     // #[allow(non_camel_case_types)]
     // #[allow(non_snake_case)]
-    // impl<'__a__, __S__,
+    // impl<__S__,
     //     __Version, __Geometry, __Material, __Mesh, __Scene,
     //     __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target,
     //     __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>
-    // borrow::Partial<'__a__, CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
+    // borrow::IntoPartial<CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
     // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
     // where
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Version, __Version__Target, Rest=__Version__Rest>,
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Geometry, __Geometry__Target, Rest=__Geometry__Rest>,
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Material, __Material__Target, Rest=__Material__Rest>,
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Mesh, __Mesh__Target, Rest=__Mesh__Rest>,
-    //     borrow::AcquireMarker: borrow::Acquire<'__a__, __Scene, __Scene__Target, Rest=__Scene__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<__Version, __Version__Target, Rest=__Version__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<__Geometry, __Geometry__Target, Rest=__Geometry__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<__Material, __Material__Target, Rest=__Material__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<__Mesh, __Mesh__Target, Rest=__Mesh__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<__Scene, __Scene__Target, Rest=__Scene__Rest>,
     // {
     //     type Rest = CtxRef<__S__, __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>;
     //     #[track_caller]
     //     #[inline(always)]
-    //     fn split_impl(
-    //         &'__a__ mut self
+    //     fn into_split_impl(
+    //         mut self
     //     ) -> (CtxRef<
-    //             __S__,
-    //             __Version__Target,
-    //             __Geometry__Target,
-    //             __Material__Target,
-    //             __Mesh__Target,
-    //             __Scene__Target
-    //         >,
+    //         __S__,
+    //         __Version__Target,
+    //         __Geometry__Target,
+    //         __Material__Target,
+    //         __Mesh__Target,
+    //         __Scene__Target
+    //     >,
     //         Self::Rest
     //     ) {
     //         use borrow::Acquire;
-    //         let (version, __version__rest) = borrow::AcquireMarker::acquire(&mut self.version);
-    //         let (geometry, __geometry__rest) = borrow::AcquireMarker::acquire(&mut self.geometry);
-    //         let (material, __material__rest) = borrow::AcquireMarker::acquire(&mut self.material);
-    //         let (mesh, __mesh__rest) = borrow::AcquireMarker::acquire(&mut self.mesh);
-    //         let (scene, __scene__rest) = borrow::AcquireMarker::acquire(&mut self.scene);
+    //         let usage_tracker = borrow::UsageTracker::new();
+    //         let (version, __version__rest) = borrow::AcquireMarker::acquire(self.version, usage_tracker.clone());
+    //         let (geometry, __geometry__rest) = borrow::AcquireMarker::acquire(self.geometry, usage_tracker.clone());
+    //         let (material, __material__rest) = borrow::AcquireMarker::acquire(self.material, usage_tracker.clone());
+    //         let (mesh, __mesh__rest) = borrow::AcquireMarker::acquire(self.mesh, usage_tracker.clone());
+    //         let (scene, __scene__rest) = borrow::AcquireMarker::acquire(self.scene, usage_tracker.clone());
     //         (
     //             CtxRef {
     //                 version,
@@ -484,7 +473,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //                 material,
     //                 mesh,
     //                 scene,
-    //                 marker: std::marker::PhantomData
+    //                 marker: std::marker::PhantomData,
+    //                 usage_tracker
     //             },
     //             CtxRef {
     //                 version: __version__rest,
@@ -492,7 +482,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //                 material: __material__rest,
     //                 mesh: __mesh__rest,
     //                 scene: __scene__rest,
-    //                 marker: std::marker::PhantomData
+    //                 marker: std::marker::PhantomData,
+    //                 usage_tracker: borrow::UsageTracker::new(),
     //             }
     //         )
     //     }
@@ -562,11 +553,38 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
         }
     });
 
+
+    // Generates:
+
+    // ```
+    // #[allow(non_camel_case_types)]
+    // impl<'__a__, __S__,
+    //     __Version, __Geometry, __Material, __Mesh, __Scene,
+    //     __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>
+    // borrow::Partial<'__a__, CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
+    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> where
+    //     Self: borrow::CloneRef<'__a__>,
+    //     borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
+    // {
+    //     type Rest = <borrow::ClonedRef<'__a__, Self> as borrow::IntoPartial<CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>>::Rest;
+    //     #[track_caller]
+    //     #[inline(always)]
+    //     fn split_impl(&'__a__ mut self) -> (CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>, Self::Rest) {
+    //         use borrow::CloneRef;
+    //         use borrow::IntoPartial;
+    //         // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
+    //         // we need to disable them.
+    //         let this = self.clone_ref_disabled_usage_tracking();
+    //         this.into_split_impl()
+    //     }
+    // }
+    // ```
     out.push({
         let fields_param_target = fields_param.iter().map(|i| {
             Ident::new(&format!("{i}{}", internal("Target")), i.span())
         }).collect_vec();
         quote! {
+            #[allow(non_camel_case_types)]
             impl<'__a__, __S__, #(#fields_param,)* #(#fields_param_target,)*>
             borrow::Partial<'__a__, #ref_ident<__S__, #(#fields_param_target,)*>>
             for #ref_ident<__S__, #(#fields_param,)*> where
@@ -595,6 +613,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // CtxRef<Ctx<'t, T>, __Version, __Geometry, __Material, __Mesh, __Scene>
     // where
     //     T: Debug,
+    //     &'t T: '__tgt__,
     //     Self: borrow::CloneRef<'__s__>,
     //     borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
     //         CtxRef<
@@ -632,8 +651,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     out.extend((0..fields_param.len()).map(|i| {
         let field_ident = &fields_ident[i];
         let field_ty = &fields_ty[i];
-        let field_ref_mut = quote! {&'__tgt mut #field_ty};
-        let field_ref = quote! {&'__tgt #field_ty};
+        let field_ref_mut = quote! {&'__tgt__ mut #field_ty};
+        let field_ref = quote! {&'__tgt__ #field_ty};
 
         let mut params2 = fields_param.clone();
         params2.remove(i);
@@ -649,11 +668,11 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
         quote! {
             #[allow(non_camel_case_types)]
-            impl<'__s__, '__tgt, #params #(#fields_param,)*>
+            impl<'__s__, '__tgt__, #params #(#fields_param,)*>
             #ref_ident<#ident<#params>, #(#fields_param,)*>
             where
                 #bounds
-                #field_ty: '__tgt,
+                #field_ty: '__tgt__,
                 Self: borrow::CloneRef<'__s__>,
                 borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
                     #ref_ident<
@@ -681,11 +700,11 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             }
 
             #[allow(non_camel_case_types)]
-            impl<'__s__, '__tgt, #params #(#fields_param,)*>
+            impl<'__s__, '__tgt__, #params #(#fields_param,)*>
             #ref_ident<#ident<#params>, #(#fields_param,)*>
             where
                 #bounds
-                #field_ty: '__tgt,
+                #field_ty: '__tgt__,
                 Self: borrow::CloneRef<'__s__>,
                 borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
                     #ref_ident<
@@ -728,6 +747,15 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //         self.mesh.disable_usage_tracking();
     //         self.scene.disable_usage_tracking();
     //     }
+    //
+    //     #[inline(always)]
+    //     fn mark_all_fields_as_used(&self) {
+    //         self.version.mark_as_used();
+    //         self.geometry.mark_as_used();
+    //         self.material.mark_as_used();
+    //         self.mesh.mark_as_used();
+    //         self.scene.mark_as_used();
+    //     }
     // }
     // ```
     out.push(quote! {
@@ -749,23 +777,49 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // ```
     // impl<'t, T> borrow::AsRefsMut for Ctx<'t, T>
     // where T: Debug {
-    //     type Target<'__s> = borrow::ExplicitParams<
-    //         Self,
-    //         borrow::RefWithFields<Ctx<'t, T>, borrow::FieldsAsMut<'__s, Ctx<'t, T>>>
-    //     > where Self: '__s;
+    //     type Target<'__s> =
+    //     borrow::RefWithFields<Ctx<'t, T>, borrow::FieldsAsMut<'__s, Ctx<'t, T>>>
+    //     where Self: '__s;
     //     #[track_caller]
     //     #[inline(always)]
-    //     pub fn as_refs_mut<'__s>(&'__s mut self) -> Self::Target<'__s> {
+    //     fn as_refs_mut<'__s>(&'__s mut self) -> Self::Target<'__s> {
+    //         let usage_tracker = borrow::UsageTracker::new();
     //         let struct_ref = CtxRef {
-    //             version:  borrow::Field::new("version", &mut self.version),
-    //             geometry: borrow::Field::new("geometry", &mut self.geometry),
-    //             material: borrow::Field::new("material", &mut self.material),
-    //             mesh:     borrow::Field::new("mesh", &mut self.mesh),
-    //             scene:    borrow::Field::new("scene", &mut self.scene),
-    //             marker:   std::marker::PhantomData,
+    //             version: borrow::Field::new(
+    //                 "version",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.version,
+    //                 usage_tracker.clone()
+    //             ),
+    //             geometry: borrow::Field::new(
+    //                 "geometry",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.geometry,
+    //                 usage_tracker.clone()
+    //             ),
+    //             material: borrow::Field::new(
+    //                 "material",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.material,
+    //                 usage_tracker.clone()
+    //             ),
+    //             mesh: borrow::Field::new(
+    //                 "mesh",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.mesh,
+    //                 usage_tracker.clone()
+    //             ),
+    //             scene: borrow::Field::new(
+    //                 "scene",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.scene,
+    //                 usage_tracker.clone()
+    //             ),
+    //             marker: std::marker::PhantomData,
+    //             usage_tracker,
     //         };
     //         borrow::HasUsageTrackedFields::disable_field_usage_tracking(&struct_ref);
-    //         borrow::ExplicitParams::new(struct_ref)
+    //         struct_ref
     //     }
     // }
     // ```
@@ -805,10 +859,9 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     output.into()
 }
 
-use syn::Token;
-use syn::parse::Parse;
-use syn::parse::ParseStream;
-use syn::token::Token;
+// ======================
+// === partial! Macro ===
+// ======================
 
 #[derive(Debug)]
 enum Selector {
@@ -829,6 +882,7 @@ impl Selectors {
 
 // #[derive(Debug)]
 struct MyInput {
+    has_underscore: bool,
     has_amp: bool,
     lifetime: Option<TokenStream>,
     selectors: Selectors,
@@ -871,6 +925,7 @@ impl Parse for Selector {
 
 impl Parse for MyInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let has_underscore = input.parse::<Token![_]>().is_ok();
         let has_amp = input.parse::<Token![&]>().is_ok();
 
         let lifetime = input.parse::<syn::Lifetime>().ok().map(|t| quote! { #t });
@@ -888,6 +943,7 @@ impl Parse for MyInput {
         let target: Type = input.parse()?;
 
         Ok(MyInput {
+            has_underscore,
             has_amp,
             lifetime,
             selectors,
@@ -895,72 +951,6 @@ impl Parse for MyInput {
         })
     }
 }
-
-// #[allow(clippy::cognitive_complexity)]
-// #[proc_macro]
-// pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
-//     let input = parse_macro_input!(input_raw as MyInput);
-//
-//     let target_ident = match &input.target {
-//         Type::Path(type_path) if type_path.path.segments.len() == 1 && input.selectors.is_all() => {
-//             let ident = &type_path.path.segments[0].ident;
-//             let is_lower = ident.to_string().chars().next().map(|c| c.is_lowercase()).unwrap_or(false);
-//             is_lower.then_some(&type_path.path.segments[0].ident)
-//         }
-//         _ => None,
-//     };
-//
-//     let out = if let Some(target_ident) = target_ident {
-//         quote! {
-//             #target_ident.partial_borrow()
-//         }
-//     } else {
-//         let target = &input.target;
-//         let default_lifetime = input.lifetime.unwrap_or_else(|| quote!{ '_ });
-//         let mut out = quote! { borrow::FieldsAsHidden<#target> };
-//         match &input.selectors {
-//             Selectors::All => out = quote! {
-//                 borrow::FieldsAsMut <#default_lifetime, #target>
-//             },
-//             Selectors::List(selectors) => {
-//                 for selector in selectors {
-//                     out = match selector {
-//                         Selector::Ident { lifetime, is_mut, ident } => {
-//                             let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
-//                             if *is_mut {
-//                                 quote! { borrow::SetFieldAsMut <#lt, #target, borrow::Str!(#ident), #out>   }
-//                             } else {
-//                                 quote! { borrow::SetFieldAsRef <#lt, #target, borrow::Str!(#ident), #out>   }
-//                             }
-//                         }
-//                         Selector::Star { lifetime, is_mut } => {
-//                             let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
-//                             if *is_mut {
-//                                 quote! { borrow::FieldsAsMut <#lt, #target>   }
-//                             } else {
-//                                 quote! { borrow::FieldsAsRef <#lt, #target>   }
-//                             }
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//
-//
-//         out = quote! {
-//             borrow::RefWithFields< #target, #out >
-//         };
-//         out
-//     };
-//
-//
-//     // println!("{}", out);
-//
-//     // let out = quote! {
-//     //
-//     // };
-//     out.into()
-// }
 
 #[allow(clippy::cognitive_complexity)]
 #[proc_macro]
@@ -1019,14 +1009,19 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
             }
         }
 
-        let pfx = if input.has_amp {
-            quote! { [& #default_lifetime mut] }
+        let (pfx, sfx) = if input.has_underscore {
+            (quote! { borrow::AllFieldsUsed< }, quote! { > })
         } else {
-            quote! { [] }
+            (quote! {}, quote! {})
+        };
+        let pfx = if input.has_amp {
+            quote! { [& #default_lifetime mut #pfx] }
+        } else {
+            quote! { [#pfx] }
         };
 
         out = quote! {
-            #target_ident!{@0 #pfx [#target] #out}
+            #target_ident!{@0 #pfx [#sfx] [#target] #out}
         };
         out
     };

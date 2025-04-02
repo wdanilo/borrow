@@ -69,8 +69,8 @@ pub struct Ctx<'v, V: Debug> {
 }
 
 fn render_pass1<'v, V: Debug>
-(mut ctx: p!(&<mut *> Ctx<'v, V>)) {
-    let (scene, mut ctx2) = ctx.extract_scene();
+(ctx: p!(&<mut *> Ctx<'v, V>)) {
+    let (scene, mut ctx2) = ctx.borrow_scene();
     for scene in &scene.data {
         for mesh in &scene.meshes {
             render_scene(p!(&mut ctx2), *mesh)

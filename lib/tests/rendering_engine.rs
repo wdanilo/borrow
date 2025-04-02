@@ -6,7 +6,6 @@ use data::Ctx;
 use borrow::partial as p;
 
 use borrow::traits::*;
-// use borrow::Union;
 
 // =============
 // === Tests ===
@@ -15,22 +14,20 @@ use borrow::traits::*;
 #[test]
 fn test_types() {
     let mut ctx = Ctx::mock();
-    render_pass1(ctx.as_refs_mut());
+    render_pass1(p!(&mut ctx));
 }
 
-fn render_pass1(mut ctx: p!(&<mut *> Ctx)) {
-    let (scene, mut ctx2) = ctx.extract_scene();
+fn render_pass1(ctx: p!(&<mut *> Ctx)) {
+    let (scene, mut ctx2) = ctx.borrow_scene_mut();
     for scene in &scene.data {
         for mesh in &scene.meshes {
             render_scene(p!(&mut ctx2), *mesh)
         }
     }
     render_pass2(ctx);
-    // render_pass3(ctx.partial_borrow());
 }
 
 fn render_pass2(_ctx: p!(&<mut *> Ctx)) {}
-// fn render_pass3(_ctx: &mut GlyphRenderCtx) {}
 fn render_scene(_ctx: p!(&<mesh, mut geometry, mut material> Ctx), _mesh: usize) {
     // ...
 }
@@ -39,4 +36,3 @@ fn render_scene(_ctx: p!(&<mesh, mut geometry, mut material> Ctx), _mesh: usize)
 
 type RenderCtx<'t> = p!(&'t<scene> Ctx);
 type GlyphCtx<'t> = p!(&'t<geometry, material, mesh> Ctx);
-// type GlyphRenderCtx<'t> = Union<RenderCtx<'t>, GlyphCtx<'t>>;
