@@ -247,20 +247,21 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // Generates:
     //
     // ```
-    // pub struct CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
-    //     pub version: borrow::Field<__Version>,
-    //     pub geometry: borrow::Field<__Geometry>,
-    //     pub material: borrow::Field<__Material>,
-    //     pub mesh: borrow::Field<__Mesh>,
-    //     pub scene: borrow::Field<__Scene>,
-    //     pub marker: std::marker::PhantomData<__S__>,
+    // pub struct CtxRef<__Self__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene> {
+    //     pub version: borrow::Field<__Track__, __Version>,
+    //     pub geometry: borrow::Field<__Track__, __Geometry>,
+    //     pub material: borrow::Field<__Track__, __Material>,
+    //     pub mesh: borrow::Field<__Track__, __Mesh>,
+    //     pub scene: borrow::Field<__Track__, __Scene>,
+    //     pub marker: std::marker::PhantomData<__Self__>,
     //     pub usage_tracker: borrow::UsageTracker,
     // }
     // ```
     let ref_struct_def = {
         quote! {
-            pub struct #ref_ident<__S__, #(#fields_param,)*> {
-                #(#fields_vis #fields_ident: borrow::Field<#fields_param>,)*
+            pub struct #ref_ident<__S__, __Track__, #(#fields_param,)*>
+            where __Track__: borrow::Bool {
+                #(#fields_vis #fields_ident: borrow::Field<__Track__, #fields_param>,)*
                 marker: std::marker::PhantomData<__S__>,
                 usage_tracker: borrow::UsageTracker,
             }
@@ -298,8 +299,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
         let init_rule = {
             let all_empty = (0..fields_ident.len()).map(|_| quote!{[]}).collect_vec();
             quote! {
-                (@0 $pfx:tt $sfx:tt $s:tt $($ts:tt)*) => {
-                    #path::#ident! { @1 $pfx $sfx $s #(#all_empty)* $($ts)* }
+                (@0 $pfx:tt $track:tt $s:tt $($ts:tt)*) => {
+                    #path::#ident! { @1 $pfx $track $s #(#all_empty)* $($ts)* }
                 };
             }
         };
@@ -307,16 +308,16 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             let mut results = def_results.clone();
             results[i] = quote! {$n};
             quote! {
-                (@1 $pfx:tt $sfx:tt $s:tt #(#matchers)* #field $n:tt $($ts:tt)*) => {
-                    #path::#ident! { @1 $pfx $sfx $s #(#results)* $($ts)* }
+                (@1 $pfx:tt $track:tt $s:tt #(#matchers)* #field $n:tt $($ts:tt)*) => {
+                    #path::#ident! { @1 $pfx $track $s #(#results)* $($ts)* }
                 };
             }
         });
         let star_rule = {
             let all_n_results = (0..fields_ident.len()).map(|_| quote!{$n}).collect_vec();
             quote! {
-                (@1 $pfx:tt $sfx:tt $s:tt #(#matchers)* * $n:tt $($ts:tt)*) => {
-                    #path::#ident! { @1 $pfx $sfx $s #(#all_n_results)*  $($ts)* }
+                (@1 $pfx:tt $track:tt $s:tt #(#matchers)* * $n:tt $($ts:tt)*) => {
+                    #path::#ident! { @1 $pfx $track $s #(#all_n_results)*  $($ts)* }
                 };
             }
         };
@@ -331,8 +332,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 }
             }).collect_vec();
             quote! {
-                (@1 [$($pfx:tt)*] [$($sfx:tt)*] [$s:ty] #(#matchers_exp)* ) => {
-                    $($pfx)* #path::#ref_ident<$s, #(#fields,)*> $($sfx)*
+                (@1 [$($pfx:tt)*] [$($track:tt)*] [$s:ty] #(#matchers_exp)* ) => {
+                    $($pfx)* #path::#ref_ident<$s, $($track)*, #(#fields,)*>
                 };
             }
         };
@@ -355,7 +356,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // borrow::AsRefWithFields<borrow::HList![__Version, __Geometry, __Material, __Mesh, __Scene]>
     // for Ctx<'t, T>
     // where T: Debug {
-    //     type Output = CtxRef<Ctx<'t, T>, __Version, __Geometry, __Material, __Mesh, __Scene>;
+    //     type Output = CtxRef<Ctx<'t, T>, borrow::True, __Version, __Geometry, __Material, __Mesh, __Scene>;
     // }
     // ```
     out.push(
@@ -364,7 +365,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             borrow::AsRefWithFields<borrow::HList![#(#fields_param,)*]>
             for #ident<#params>
             where #bounds {
-                type Output = #ref_ident<#ident<#params>, #(#fields_param,)*>;
+                type Output = #ref_ident<#ident<#params>, borrow::True, #(#fields_param,)*>;
             }
         }
     );
@@ -372,22 +373,24 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // Generates:
     //
     // ```
-    // impl<'__s__, __S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::CloneRef<'__s__>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // impl<'__s__, __S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::CloneRef<'__s__>
+    // for CtxRef<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
     // where
-    //     borrow::Field<__Version>: borrow::CloneField<'__s__>,
-    //     borrow::Field<__Geometry>: borrow::CloneField<'__s__>,
-    //     borrow::Field<__Material>: borrow::CloneField<'__s__>,
-    //     borrow::Field<__Mesh>: borrow::CloneField<'__s__>,
-    //     borrow::Field<__Scene>: borrow::CloneField<'__s__>,
+    //     __Track__: borrow::Bool,
+    //     borrow::Field<__Track__, __Version>: borrow::CloneField<'__s__, __Track__>,
+    //     borrow::Field<__Track__, __Geometry>: borrow::CloneField<'__s__, __Track__>,
+    //     borrow::Field<__Track__, __Material>: borrow::CloneField<'__s__, __Track__>,
+    //     borrow::Field<__Track__, __Mesh>: borrow::CloneField<'__s__, __Track__>,
+    //     borrow::Field<__Track__, __Scene>: borrow::CloneField<'__s__, __Track__>,
     // {
     //     type Cloned = CtxRef<
     //         __S__,
-    //         borrow::ClonedField<'__s__, borrow::Field<__Version>>,
-    //         borrow::ClonedField<'__s__, borrow::Field<__Geometry>>,
-    //         borrow::ClonedField<'__s__, borrow::Field<__Material>>,
-    //         borrow::ClonedField<'__s__, borrow::Field<__Mesh>>,
-    //         borrow::ClonedField<'__s__, borrow::Field<__Scene>>
+    //         __Track__,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Version>, __Track__>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Geometry>, __Track__>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Material>, __Track__>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Mesh>, __Track__>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Scene>, __Track__>
     //     >;
     //     fn clone_ref_disabled_usage_tracking(&'__s__ mut self) -> Self::Cloned {
     //         use borrow::CloneField;
@@ -405,14 +408,16 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // ```
     out.push(
         quote! {
-            impl<'__s__, __S__, #(#fields_param,)*> borrow::CloneRef<'__s__>
-            for #ref_ident<__S__, #(#fields_param,)*>
+            impl<'__s__, __S__, __Track__, #(#fields_param,)*> borrow::CloneRef<'__s__>
+            for #ref_ident<__S__, __Track__, #(#fields_param,)*>
             where
-                #(borrow::Field<#fields_param>: borrow::CloneField<'__s__>,)*
+                __Track__: borrow::Bool,
+                #(borrow::Field<__Track__, #fields_param>: borrow::CloneField<'__s__, __Track__>,)*
             {
                 type Cloned = #ref_ident<
                     __S__,
-                    #(borrow::ClonedField<'__s__, borrow::Field<#fields_param>>,)*
+                    __Track__,
+                    #(borrow::ClonedField<'__s__, borrow::Field<__Track__, #fields_param>, __Track__>,)*
                 >;
                 fn clone_ref_disabled_usage_tracking(&'__s__ mut self) -> Self::Cloned {
                     use borrow::CloneField;
@@ -431,26 +436,29 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // ```
     // #[allow(non_camel_case_types)]
     // #[allow(non_snake_case)]
-    // impl<__S__,
+    // impl<__S__, __Track__, __Track__Target__,
     //     __Version, __Geometry, __Material, __Mesh, __Scene,
     //     __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target,
     //     __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>
-    // borrow::IntoPartial<CtxRef<__S__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // borrow::IntoPartial<CtxRef<__S__, __Track__Target__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
+    // for CtxRef<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
     // where
+    //     __Track__: borrow::Bool,
+    //     __Track__Target__: borrow::Bool,
     //     borrow::AcquireMarker: borrow::Acquire<__Version, __Version__Target, Rest=__Version__Rest>,
     //     borrow::AcquireMarker: borrow::Acquire<__Geometry, __Geometry__Target, Rest=__Geometry__Rest>,
     //     borrow::AcquireMarker: borrow::Acquire<__Material, __Material__Target, Rest=__Material__Rest>,
     //     borrow::AcquireMarker: borrow::Acquire<__Mesh, __Mesh__Target, Rest=__Mesh__Rest>,
     //     borrow::AcquireMarker: borrow::Acquire<__Scene, __Scene__Target, Rest=__Scene__Rest>,
     // {
-    //     type Rest = CtxRef<__S__, __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>;
+    //     type Rest = CtxRef<__S__, __Track__, __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>;
     //     #[track_caller]
     //     #[inline(always)]
     //     fn into_split_impl(
     //         mut self
     //     ) -> (CtxRef<
     //         __S__,
+    //         __Track__Target__,
     //         __Version__Target,
     //         __Geometry__Target,
     //         __Material__Target,
@@ -506,14 +514,16 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
         quote! {
             #[allow(non_camel_case_types)]
             #[allow(non_snake_case)]
-            impl<__S__,
+            impl<__S__, __Track__, __Track__Target__,
                 #(#fields_param,)*
                 #(#field_params_target,)*
                 #(#field_params_rest,)*
             >
-            borrow::IntoPartial<#ref_ident<__S__, #(#field_params_target,)*>>
-            for #ref_ident<__S__, #(#fields_param,)*>
+            borrow::IntoPartial<#ref_ident<__S__, __Track__Target__, #(#field_params_target,)*>>
+            for #ref_ident<__S__, __Track__, #(#fields_param,)*>
             where
+                __Track__: borrow::Bool,
+                __Track__Target__: borrow::Bool,
                 #(
                     borrow::AcquireMarker: borrow::Acquire<
                         #fields_param,
@@ -522,14 +532,14 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                     >,
                 )*
             {
-                type Rest = #ref_ident<__S__, #(#field_params_rest,)*>;
+                type Rest = #ref_ident<__S__, __Track__, #(#field_params_rest,)*>;
 
                 #[track_caller]
                 #[inline(always)]
                 fn into_split_impl(
                     mut self
                 ) -> (
-                    #ref_ident<__S__, #(#field_params_target,)*>,
+                    #ref_ident<__S__, __Track__Target__, #(#field_params_target,)*>,
                     Self::Rest
                 ) {
                     use borrow::Acquire;
@@ -558,10 +568,11 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
     // ```
     // #[allow(non_camel_case_types)]
-    // impl<'__a__, __S__, __Target__,
+    // impl<'__a__, __S__, __Track__, __Target__,
     //     __Version, __Geometry, __Material, __Mesh, __Scene>
     // borrow::Partial<'__a__, __Target__>
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> where
+    // for CtxRef<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene> where
+    //     __Track__: borrow::Bool,
     //     Self: borrow::CloneRef<'__a__>,
     //     borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<__Target__>
     // {
@@ -581,9 +592,10 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     out.push({
         quote! {
             #[allow(non_camel_case_types)]
-            impl<'__a__, __S__, __Target__, #(#fields_param,)*>
+            impl<'__a__, __S__, __Track__, __Target__, #(#fields_param,)*>
             borrow::Partial<'__a__, __Target__>
-            for #ref_ident<__S__, #(#fields_param,)*> where
+            for #ref_ident<__S__, __Track__, #(#fields_param,)*> where
+                __Track__: borrow::Bool,
                 Self: borrow::CloneRef<'__a__>,
                 borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<__Target__>
             {
@@ -605,15 +617,17 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // For each field. For the 'version' field:
     //
     // ```
-    // impl<'__s__, '__tgt__, 't, T, __Version, __Geometry, __Material, __Mesh, __Scene>
-    // CtxRef<Ctx<'t, T>, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // impl<'__s__, '__tgt__, 't, T, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // CtxRef<Ctx<'t, T>, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
     // where
+    //     __Track__: borrow::Bool,
     //     T: Debug,
     //     &'t T: '__tgt__,
     //     Self: borrow::CloneRef<'__s__>,
     //     borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
     //         CtxRef<
     //             Ctx<'t, T>,
+    //             __Track__,
     //             borrow::Hidden,
     //             &'__tgt__ mut GeometryCtx,
     //             borrow::Hidden,
@@ -625,10 +639,11 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     //     #[track_caller]
     //     #[inline(always)]
     //     pub fn extract_geometry2(&'__s__ mut self) -> (
-    //         borrow::Field<&'__tgt__ mut GeometryCtx>,
+    //         borrow::Field<__Track__, &'__tgt__ mut GeometryCtx>,
     //         <borrow::ClonedRef<'__s__, Self> as borrow::IntoPartial<
     //             CtxRef<
     //                 Ctx<'t, T>,
+    //                 __Track__,
     //                 borrow::Hidden,
     //                 &'__tgt__ mut GeometryCtx,
     //                 borrow::Hidden,
@@ -664,15 +679,17 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
 
         quote! {
             #[allow(non_camel_case_types)]
-            impl<'__s__, '__tgt__, #params #(#fields_param,)*>
-            #ref_ident<#ident<#params>, #(#fields_param,)*>
+            impl<'__s__, '__tgt__, #params __Track__, #(#fields_param,)*>
+            #ref_ident<#ident<#params>, __Track__, #(#fields_param,)*>
             where
                 #bounds
+                __Track__: borrow::Bool,
                 #field_ty: '__tgt__,
                 Self: borrow::CloneRef<'__s__>,
                 borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
                     #ref_ident<
                         #ident<#params>,
+                        __Track__,
                         #(#target_params_mut,)*
                     >
                 >
@@ -680,10 +697,11 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 #[track_caller]
                 #[inline(always)]
                 pub fn #fn_ident_mut(&'__s__ mut self) -> (
-                    borrow::Field<#field_ref_mut>,
+                    borrow::Field<__Track__, #field_ref_mut>,
                         <borrow::ClonedRef<'__s__, Self> as borrow::IntoPartial<
                             #ref_ident<
                                 #ident<#params>,
+                                __Track__,
                                 #(#target_params_mut,)*
                             >
                         >>::Rest
@@ -696,15 +714,17 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
             }
 
             #[allow(non_camel_case_types)]
-            impl<'__s__, '__tgt__, #params #(#fields_param,)*>
-            #ref_ident<#ident<#params>, #(#fields_param,)*>
+            impl<'__s__, '__tgt__, #params __Track__, #(#fields_param,)*>
+            #ref_ident<#ident<#params>, __Track__, #(#fields_param,)*>
             where
                 #bounds
+                __Track__: borrow::Bool,
                 #field_ty: '__tgt__,
                 Self: borrow::CloneRef<'__s__>,
                 borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
                     #ref_ident<
                         #ident<#params>,
+                        __Track__,
                         #(#target_params,)*
                     >
                 >
@@ -712,10 +732,11 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
                 #[track_caller]
                 #[inline(always)]
                 pub fn #fn_ident(&'__s__ mut self) -> (
-                    borrow::Field<#field_ref>,
+                    borrow::Field<__Track__, #field_ref>,
                         <borrow::ClonedRef<'__s__, Self> as borrow::IntoPartial<
                             #ref_ident<
                                 #ident<#params>,
+                                __Track__,
                                 #(#target_params,)*
                             >
                         >>::Rest
@@ -733,8 +754,9 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // Generates:
     //
     // ```
-    // impl<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::HasUsageTrackedFields
-    // for CtxRef<__S__, __Version, __Geometry, __Material, __Mesh, __Scene> {
+    // impl<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::HasUsageTrackedFields
+    // for CtxRef<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // where __Track__: borrow::Bool {
     //     #[inline(always)]
     //     fn disable_field_usage_tracking(&self) {
     //         self.version.disable_usage_tracking();
@@ -755,8 +777,9 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // }
     // ```
     out.push(quote! {
-        impl<__S__, #(#fields_param,)*> borrow::HasUsageTrackedFields
-        for #ref_ident<__S__, #(#fields_param,)*> {
+        impl<__S__, __Track__, #(#fields_param,)*> borrow::HasUsageTrackedFields
+        for #ref_ident<__S__, __Track__, #(#fields_param,)*>
+        where __Track__: borrow::Bool {
             #[inline(always)]
             fn disable_field_usage_tracking(&self) {
                 #(self.#fields_ident.disable_usage_tracking();)*
@@ -1005,19 +1028,19 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
             }
         }
 
-        let (pfx, sfx) = if input.has_underscore {
-            (quote! { borrow::AllFieldsUsed< }, quote! { > })
+        let track = if input.has_underscore {
+            quote! { borrow::False }
         } else {
-            (quote! {}, quote! {})
+            quote! { borrow::True }
         };
         let pfx = if input.has_amp {
-            quote! { [& #default_lifetime mut #pfx] }
+            quote! { [& #default_lifetime mut] }
         } else {
-            quote! { [#pfx] }
+            quote! { [] }
         };
 
         out = quote! {
-            #target_ident!{@0 #pfx [#sfx] [#target] #out}
+            #target_ident!{@0 #pfx [#track] [#target] #out}
         };
         out
     };

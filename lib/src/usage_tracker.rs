@@ -4,7 +4,9 @@ use crate::default;
 use crate::Label;
 use crate::OptUsage;
 use crate::Usage;
+use crate::Bool;
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 // ===============
@@ -171,20 +173,22 @@ impl Drop for UsageTrackerData {
 // === FieldUsageTracker ===
 
 #[derive(Debug)]
-pub(crate) struct FieldUsageTracker {
+pub(crate) struct FieldUsageTracker<Enabled: Bool> {
     label: Label,
     requested_usage: OptUsage,
     needed_usage: Arc<Cell<OptUsage>>,
     parent_needed_usage: Option<Arc<Cell<OptUsage>>>,
     disabled: Cell<bool>,
     tracker: Option<UsageTracker>,
+    enabled_marker: PhantomData<Enabled>,
 }
 
-impl Drop for FieldUsageTracker {
+impl<Enabled: Bool> Drop for FieldUsageTracker<Enabled> {
     fn drop(&mut self) {
         let needed = self.needed_usage.get();
         self.register_parent_needed_usage(needed);
-        if !self.disabled.get() {
+        let enabled = !self.disabled.get() && Enabled::to_bool();
+        if enabled {
             let requested = self.requested_usage;
             let usage = UsageResult { requested, needed };
             self.tracker.as_mut().map(|t| t.set_usage(self.label, usage));
@@ -196,43 +200,47 @@ impl Drop for FieldUsageTracker {
     }
 }
 
-impl FieldUsageTracker {
+impl<Enabled: Bool> FieldUsageTracker<Enabled> {
     pub(crate) fn new(label: Label, requested_usage: OptUsage, tracker: UsageTracker) -> Self {
         let needed_usage = default();
         let parent_needed_usage = None;
         let disabled = default();
         let tracker = Some(tracker);
-        Self { label, requested_usage, needed_usage, parent_needed_usage, disabled, tracker }
+        let enabled_marker = PhantomData;
+        FieldUsageTracker { label, requested_usage, needed_usage, parent_needed_usage, disabled, tracker, enabled_marker }
     }
 
-    pub(crate) fn new_child(&self, requested_usage: Usage, tracker: UsageTracker) -> Self {
+    pub(crate) fn new_child<E: Bool>(&self, requested_usage: Usage, tracker: UsageTracker) -> FieldUsageTracker<E> {
         let label = self.label;
         let needed_usage = default();
         let parent_needed_usage = Some(self.needed_usage.clone());
         let disabled = default();
         let requested_usage = Some(requested_usage);
+        let enabled_marker = PhantomData;
         let tracker = Some(tracker);
-        Self { label, requested_usage, needed_usage, parent_needed_usage, disabled, tracker }
+        FieldUsageTracker { label, requested_usage, needed_usage, parent_needed_usage, disabled, tracker, enabled_marker }
     }
 
-    pub(crate) fn new_child_disabled(&self) -> Self {
+    pub(crate) fn new_child_disabled<E: Bool>(&self) -> FieldUsageTracker<E> {
         let label = self.label;
         let requested_usage = Some(Usage::Mut);
         let needed_usage = default();
         let parent_needed_usage = Some(self.needed_usage.clone());
         let disabled = Cell::new(true);
+        let enabled_marker = PhantomData;
         let tracker = None;
-        Self { label, requested_usage, needed_usage, parent_needed_usage, disabled, tracker }
+        FieldUsageTracker { label, requested_usage, needed_usage, parent_needed_usage, disabled, tracker, enabled_marker }
     }
 
-    pub(crate) fn clone_disabled(&self) -> Self {
+    pub(crate) fn clone_disabled<E: Bool>(&self) -> FieldUsageTracker<E> {
         let label = self.label;
         let requested_usage = self.requested_usage.clone();
         let needed_usage = self.needed_usage.clone();
         let parent_needed_usage = self.parent_needed_usage.clone();
         let disabled = Cell::new(true);
+        let enabled_marker = PhantomData;
         let tracker = None;
-        Self { label, requested_usage, needed_usage, parent_needed_usage, disabled, tracker }
+        FieldUsageTracker { label, requested_usage, needed_usage, parent_needed_usage, disabled, tracker, enabled_marker }
     }
 
     pub(crate) fn disable(&self) {

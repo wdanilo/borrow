@@ -254,11 +254,12 @@
 //! # pub struct Edge;
 //! # pub struct Group;
 //! #
-//! pub struct GraphRef<__S__, Nodes, Edges, Groups> {
-//!     pub nodes:     borrow::Field<Nodes>,
-//!     pub edges:     borrow::Field<Edges>,
-//!     pub groups:    borrow::Field<Groups>,
-//!     marker:        std::marker::PhantomData<__S__>,
+//! pub struct GraphRef<__Self__, __Tracking__, Nodes, Edges, Groups>
+//! where __Tracking__: borrow::Bool {
+//!     pub nodes:     borrow::Field<__Tracking__, Nodes>,
+//!     pub edges:     borrow::Field<__Tracking__, Edges>,
+//!     pub groups:    borrow::Field<__Tracking__, Groups>,
+//!     marker:        std::marker::PhantomData<__Self__>,
 //!     // In release mode this is optimized away.
 //!     usage_tracker: borrow::UsageTracker,
 //! }
@@ -267,6 +268,7 @@
 //!     pub fn as_refs_mut(&mut self) ->
 //!        GraphRef<
 //!            Self,
+//!            borrow::True,
 //!            &mut Vec<Node>,
 //!            &mut Vec<Edge>,
 //!            &mut Vec<Group>,
@@ -370,6 +372,7 @@
 //! fn test(graph:
 //!     &mut GraphRef<
 //!         Graph,
+//!         borrow::True,
 //!         &mut Vec<Node>,
 //!         &mut Vec<Edge>,
 //!         &mut Vec<Group>
@@ -381,6 +384,7 @@
 //! fn test2(graph:
 //!     &mut GraphRef<
 //!         Graph,
+//!         borrow::True,
 //!         &Vec<Node>,
 //!         &mut Vec<Edge>,
 //!         Hidden
@@ -1163,8 +1167,29 @@ pub use tstr::TS as Str;
 pub use hlist::*;
 
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
+
+
+pub trait Bool {
+    fn to_bool() -> bool;
+}
+
+pub struct True;
+pub struct False;
+
+impl Bool for True {
+    fn to_bool() -> bool {
+        true
+    }
+}
+
+impl Bool for False {
+    fn to_bool() -> bool {
+        false
+    }
+}
 
 // ==============
 // === Traits ===
@@ -1220,13 +1245,14 @@ pub trait HasUsageTrackedFields {
 #[doc(hidden)]
 #[derive(Debug)]
 #[cfg_attr(not(usage_tracking_enabled), repr(transparent))]
-pub struct Field<T> {
+pub struct Field<E: Bool, T> {
     pub value_no_usage_tracking: T,
     #[cfg(usage_tracking_enabled)]
-    usage_tracker: FieldUsageTracker,
+    usage_tracker: FieldUsageTracker<E>,
+    type_marker: PhantomData<E>,
 }
 
-impl<T> Field<T> {
+impl<Enabled: Bool, T> Field<Enabled, T> {
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     pub fn new(label: Label, requested_usage: OptUsage, value: T, tracker: UsageTracker) -> Self {
@@ -1242,25 +1268,27 @@ impl<T> Field<T> {
 
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn cons(value_no_usage_tracking: T, usage_tracker: FieldUsageTracker) -> Self {
-        Self { value_no_usage_tracking, usage_tracker }
+    fn cons(value_no_usage_tracking: T, usage_tracker: FieldUsageTracker<Enabled>) -> Self {
+        let type_marker = PhantomData;
+        Self { value_no_usage_tracking, usage_tracker, type_marker }
     }
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn cons(value_no_usage_tracking: T) -> Self {
-        Self { value_no_usage_tracking }
+        let type_marker = PhantomData;
+        Self { value_no_usage_tracking, type_marker }
     }
 
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn clone_as_hidden(&self) -> Field<Hidden> {
+    fn clone_as_hidden<E: Bool>(&self) -> Field<E, Hidden> {
         Field::cons(Hidden, self.usage_tracker.clone_disabled())
     }
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn clone_as_hidden(&self) -> Field<Hidden> {
+    fn clone_as_hidden<E: Bool>(&self) -> Field<E, Hidden> {
         Field::cons(Hidden)
     }
 
@@ -1285,7 +1313,7 @@ impl<T> Field<T> {
     pub fn mark_as_used(&self) {}
 }
 
-impl<T> Deref for Field<T> {
+impl<E: Bool, T> Deref for Field<E, T> {
     type Target = T;
     #[inline(always)]
     fn deref(&self) -> &T {
@@ -1295,7 +1323,7 @@ impl<T> Deref for Field<T> {
     }
 }
 
-impl<T> DerefMut for Field<T> {
+impl<E: Bool, T> DerefMut for Field<E, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         #[cfg(usage_tracking_enabled)]
@@ -1304,7 +1332,7 @@ impl<T> DerefMut for Field<T> {
     }
 }
 
-impl<'t, T> IntoIterator for Field<&'t T>
+impl<'t, E: Bool, T> IntoIterator for Field<E, &'t T>
 where &'t T: IntoIterator {
     type Item = <&'t T as IntoIterator>::Item;
     type IntoIter = <&'t T as IntoIterator>::IntoIter;
@@ -1316,7 +1344,7 @@ where &'t T: IntoIterator {
     }
 }
 
-impl<'t, T> IntoIterator for Field<&'t mut T>
+impl<'t, E: Bool, T> IntoIterator for Field<E, &'t mut T>
 where &'t mut T: IntoIterator {
     type Item = <&'t mut T as IntoIterator>::Item;
     type IntoIter = <&'t mut T as IntoIterator>::IntoIter;
@@ -1346,49 +1374,49 @@ pub type ClonedRef<'s, T> = <T as CloneRef<'s>>::Cloned;
 // ==================
 
 #[doc(hidden)]
-pub trait CloneField<'s> {
+pub trait CloneField<'s, E: Bool> {
     type Cloned;
-    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned>;
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned>;
 }
 
 #[doc(hidden)]
-pub type ClonedField<'s, T> = <T as CloneField<'s>>::Cloned;
+pub type ClonedField<'s, T, E> = <T as CloneField<'s, E>>::Cloned;
 
-impl<'s> CloneField<'s> for Field<Hidden> {
+impl<'s, E: Bool> CloneField<'s, E> for Field<E, Hidden> {
     type Cloned = Hidden;
     #[cfg(usage_tracking_enabled)]
-    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
         let usage_tracker = self.usage_tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
     #[cfg(not(usage_tracking_enabled))]
-    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
         Field::cons(self.value_no_usage_tracking)
     }
 }
 
-impl<'s, 't, T> CloneField<'s> for Field<&'t T> {
+impl<'s, 't, E: Bool, T> CloneField<'s, E> for Field<E, &'t T> {
     type Cloned = &'t T;
     #[cfg(usage_tracking_enabled)]
-    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
         let usage_tracker = self.usage_tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
     #[cfg(not(usage_tracking_enabled))]
-    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
         Field::cons(self.value_no_usage_tracking)
     }
 }
 
-impl<'s, 't, T: 's> CloneField<'s> for Field<&'t mut T> {
+impl<'s, 't, E: Bool, T: 's> CloneField<'s, E> for Field<E, &'t mut T> {
     type Cloned = &'s mut T;
     #[cfg(usage_tracking_enabled)]
-    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
         let usage_tracker = self.usage_tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
     #[cfg(not(usage_tracking_enabled))]
-    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<Self::Cloned> {
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
         Field::cons(self.value_no_usage_tracking)
     }
 }
@@ -1441,14 +1469,14 @@ pub struct AcquireMarker;
 #[doc(hidden)]
 pub trait Acquire<This, Target> {
     type Rest;
-    fn acquire(this: Field<This>, tracker: UsageTracker) -> (Field<Target>, Field<Self::Rest>);
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, This>, tracker: UsageTracker) -> (Field<E1, Target>, Field<E, Self::Rest>);
 }
 
 impl<'t, T> Acquire<&'t mut T, Hidden> for AcquireMarker {
     type Rest = &'t mut T;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire(this: Field<&'t mut T>, _: UsageTracker) -> (Field<Hidden>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
@@ -1457,7 +1485,7 @@ impl<'t, T> Acquire<&'t mut T, Hidden> for AcquireMarker {
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire(this: Field<&'t mut T>, _: UsageTracker) -> (Field<Hidden>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking)
@@ -1469,7 +1497,7 @@ impl<'t, T> Acquire<&'t T, Hidden> for AcquireMarker {
     type Rest = &'t T;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire(this: Field<&'t T>, _: UsageTracker) -> (Field<Hidden>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t T>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
@@ -1478,7 +1506,7 @@ impl<'t, T> Acquire<&'t T, Hidden> for AcquireMarker {
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire(this: Field<&'t T>, _: UsageTracker) -> (Field<Hidden>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t T>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking)
@@ -1490,7 +1518,7 @@ impl Acquire<Hidden, Hidden> for AcquireMarker {
     type Rest = Hidden;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire(this: Field<Hidden>, _: UsageTracker) -> (Field<Hidden>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, Hidden>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
@@ -1498,7 +1526,7 @@ impl Acquire<Hidden, Hidden> for AcquireMarker {
     }
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire(this: Field<Hidden>, _: UsageTracker) -> (Field<Hidden>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, Hidden>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
         (
             this.clone_as_hidden(),
             Field::cons(this.value_no_usage_tracking)
@@ -1511,8 +1539,8 @@ where 't: 'y {
     type Rest = Hidden;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire(this: Field<&'t mut T>, usage_tracker: UsageTracker)
-    -> (Field<&'y mut T>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, usage_tracker: UsageTracker)
+    -> (Field<E1, &'y mut T>, Field<E, Self::Rest>) {
         let rest = this.clone_as_hidden();
         (
             Field::cons(
@@ -1524,7 +1552,7 @@ where 't: 'y {
     }
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire(this: Field<&'t mut T>, _: UsageTracker) -> (Field<&'y mut T>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, _: UsageTracker) -> (Field<E1, &'y mut T>, Field<E, Self::Rest>) {
         let rest = this.clone_as_hidden();
         (Field::cons(this.value_no_usage_tracking), rest)
     }
@@ -1535,7 +1563,7 @@ where 't: 'y {
     type Rest = &'t T;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire(this: Field<&'t mut T>, usage_tracker: UsageTracker) -> (Field<&'y T>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, usage_tracker: UsageTracker) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
         (
             Field::cons(
                 this.value_no_usage_tracking,
@@ -1546,7 +1574,7 @@ where 't: 'y {
     }
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire(this: Field<&'t mut T>, _: UsageTracker) -> (Field<&'y T>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, _: UsageTracker) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
         (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking))
     }
 }
@@ -1556,7 +1584,7 @@ where 't: 'y {
     type Rest = &'t T;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire(this: Field<&'t T>, usage_tracker: UsageTracker) -> (Field<&'y T>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t T>, usage_tracker: UsageTracker) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
         (
             Field::cons(
                 this.value_no_usage_tracking,
@@ -1567,7 +1595,7 @@ where 't: 'y {
     }
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire(this: Field<&'t T>, _: UsageTracker) -> (Field<&'y T>, Field<Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t T>, _: UsageTracker) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
         (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking),)
     }
 }
@@ -1659,28 +1687,33 @@ extern crate self as borrow;
 
 use borrow::partial as p;
 
-struct Node;
-struct Edge;
-struct Group;
+pub struct GeometryCtx {}
+pub struct MaterialCtx {}
+pub struct MeshCtx {}
+pub struct SceneCtx {}
 
-#[derive(borrow::Partial, Default)]
+#[derive(borrow::Partial)]
 #[module(crate)]
-struct Graph {
-  pub nodes:  Vec<Node>,
-  pub edges:  Vec<Edge>,
-  pub groups: Vec<Group>,
+pub struct Ctx<'t, T: Debug> {
+    pub version: &'t T,
+    pub geometry: GeometryCtx,
+    pub material: MaterialCtx,
+    pub mesh: MeshCtx,
+    pub scene: SceneCtx,
 }
 
 pub fn test() {
-    let mut graph = Graph::default();
-    pass1(p!(&mut graph));
+    let mut ctx = Ctx {
+        version: &0,
+        geometry: GeometryCtx {},
+        material: MaterialCtx {},
+        mesh: MeshCtx {},
+        scene: SceneCtx {},
+    };
+    test2(p!(&mut ctx));
 }
 
-fn pass1(mut graph: p!(&<mut edges, nodes> Graph)) {
-    let _ = &mut *graph.edges; // Simulate mut usage of edges.
-    pass2(p!(&mut graph));
+pub fn test2<'t>(ctx: p!(&<mut *> Ctx<'t, usize>)) {
+    let _ = &*ctx.version;
 }
 
-fn pass2(mut graph: p!(&<nodes> Graph)) {
-    let _ = &*graph.nodes; // Simulate ref usage of nodes.
-}
