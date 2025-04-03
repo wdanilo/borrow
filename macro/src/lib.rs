@@ -30,104 +30,6 @@ fn internal(s: &str) -> String {
     format!("__{s}")
 }
 
-
-// =============
-// === Macro ===
-// =============
-
-fn meta_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-
-    let input = parse_macro_input!(input as DeriveInput);
-
-    let ident = input.ident;
-    let fields = if let Data::Struct(data) = &input.data {
-        if let Fields::Named(fields) = &data.fields {
-            fields.named.iter().collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
-
-    let field_types = fields.iter().map(|f| &f.ty).collect_vec();
-
-    let generics_vec = input.generics.params.iter().collect_vec();
-
-    let lifetimes = generics_vec.iter().filter_map(|t| {
-        if let syn::GenericParam::Lifetime(lt) = t {
-            Some(lt)
-        } else {
-            None
-        }
-    }).collect_vec();
-
-    let ty_params = generics_vec.iter().filter_map(|t| {
-        if let syn::GenericParam::Type(ty) = t {
-            Some(ty.ident.clone())
-        } else {
-            None
-        }
-    }).collect_vec();
-
-    let params = quote! {#(#lifetimes,)* #(#ty_params,)*};
-
-    let bounds_vec = {
-        let inline_bounds = generics_vec.iter().filter_map(|t| {
-            if let syn::GenericParam::Type(ty) = t {
-                (!ty.bounds.is_empty()).then_some(ty)
-            } else {
-                None
-            }
-        }).collect_vec();
-
-        let where_bounds = input.generics.where_clause.as_ref().map(|t|
-            t.predicates.iter().collect_vec()
-        ).unwrap_or_default();
-
-        inline_bounds.iter().map(|t| quote! {#t})
-            .chain(where_bounds.iter().map(|t| quote! {#t})).collect_vec()
-
-    };
-
-    let bounds = quote! {#(#bounds_vec,)*};
-
-    // === Ctx 1 ===
-
-    let has_fields_for_struct = quote! {
-        impl<#params> borrow::HasFields for #ident<#params>
-        where #bounds {
-            type Fields = borrow::HList![#(#field_types,)*];
-        }
-    };
-
-    // === Ctx 2 ===
-
-    let has_fields_ext_for_struct = {
-        let fields_hidden = field_types.iter().map(|_| quote! {borrow::Hidden});
-        let fields_ref    = field_types.iter().map(|t| quote! {&'__a #t});
-        let fields_mut    = field_types.iter().map(|t| quote! {&'__a mut #t});
-        quote! {
-            impl<#params> borrow::HasFieldsExt for #ident<#params>
-            where #bounds {
-                type FieldsAsHidden = borrow::HList![ #(#fields_hidden,)* ];
-                type FieldsAsRef<'__a> = borrow::HList![ #(#fields_ref,)* ] where Self: '__a;
-                type FieldsAsMut<'__a> = borrow::HList![ #(#fields_mut,)* ] where Self: '__a;
-            }
-        }
-    };
-
-    // === Ctx 3 ===
-
-    let out = quote! {
-        #has_fields_for_struct
-        #has_fields_ext_for_struct
-    };
-
-    out.into()
-}
-
-
 fn get_fields(input: &DeriveInput) -> Vec<&syn::Field> {
     if let Data::Struct(data) = &input.data {
         if let Fields::Named(fields) = &data.fields {
@@ -188,6 +90,51 @@ fn get_module_tokens(attr: &syn::Attribute) -> Option<TokenStream> {
     }
 }
 
+// ===================
+// === Meta Derive ===
+// ===================
+
+fn meta_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let ident = &input.ident;
+    let fields = get_fields(&input);
+    let params = get_params(&input);
+    let bounds = get_bounds(&input);
+    let field_types = fields.iter().map(|f| &f.ty).collect_vec();
+
+    let has_fields_for_struct = quote! {
+        impl<#params> borrow::HasFields for #ident<#params>
+        where #bounds {
+            type Fields = borrow::HList![#(#field_types,)*];
+        }
+    };
+
+    let has_fields_ext_for_struct = {
+        let fields_hidden = field_types.iter().map(|_| quote! {borrow::Hidden});
+        let fields_ref    = field_types.iter().map(|t| quote! {&'__a #t});
+        let fields_mut    = field_types.iter().map(|t| quote! {&'__a mut #t});
+        quote! {
+            impl<#params> borrow::HasFieldsExt for #ident<#params>
+            where #bounds {
+                type FieldsAsHidden = borrow::HList![ #(#fields_hidden,)* ];
+                type FieldsAsRef<'__a> = borrow::HList![ #(#fields_ref,)* ] where Self: '__a;
+                type FieldsAsMut<'__a> = borrow::HList![ #(#fields_mut,)* ] where Self: '__a;
+            }
+        }
+    };
+
+    let out = quote! {
+        #has_fields_for_struct
+        #has_fields_ext_for_struct
+    };
+
+    out.into()
+}
+
+// ======================
+// === Partial Derive ===
+// ======================
+
 // The internal macro documentation shows expansion parts for the following input:
 // ```
 // pub struct GeometryCtx {}
@@ -212,10 +159,8 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     let input = parse_macro_input!(input_raw2 as DeriveInput);
 
     let path = input.attrs.iter()
-        .find_map(|attr| get_module_tokens(attr))
+        .find_map(get_module_tokens)
         .expect("Expected #[module(...)] attribute");
-
-    // panic!("Module path: {}", path);
 
     let ident = &input.ident;
     let fields = get_fields(&input);
@@ -293,7 +238,7 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
         fn matcher(i: usize) -> Ident {
             Ident::new(&format!("t{i}"), Span::call_site())
         }
-        let macro_ident = Ident::new(&format!("{}Macro", ident), ident.span());
+        let macro_ident = Ident::new(&format!("{ident}Macro"), ident.span());
         let matchers = (0..fields_ident.len()).map(matcher).map(|t| quote!{$#t:tt}).collect_vec();
         let def_results  = (0..fields_ident.len()).map(matcher).map(|t| quote!{$#t}).collect_vec();
         let init_rule = {
@@ -908,24 +853,20 @@ struct MyInput {
     target: Type,
 }
 
-fn parse_angled_list<T: Parse>(input: ParseStream) -> syn::Result<Vec<T>> {
+fn parse_angled_list<T: Parse>(input: ParseStream) -> Vec<T> {
     let mut params = vec![];
-
     while !input.peek(Token![>]) {
         if let Ok(value) = input.parse::<T>() {
             params.push(value);
         } else {
             break
         }
-
         if input.peek(Token![>]) {
             break;
         }
-
         input.parse::<Token![,]>().ok();
     }
-
-    Ok(params)
+    params
 }
 
 
@@ -952,7 +893,7 @@ impl Parse for MyInput {
         let selectors = if input.parse::<Token![mut]>().is_ok() {
             Selectors::All
         } else if input.parse::<Token![<]>().is_ok() {
-            let selectors = parse_angled_list::<Selector>(input)?;
+            let selectors = parse_angled_list::<Selector>(input);
             input.parse::<Token![>]>()?;
             Selectors::List(selectors)
         } else {
@@ -979,7 +920,7 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let target_ident = match &input.target {
         Type::Path(type_path) if type_path.path.segments.len() == 1 && input.selectors.is_all() => {
             let ident = &type_path.path.segments[0].ident;
-            let is_lower = ident.to_string().chars().next().map(|c| c.is_lowercase()).unwrap_or(false);
+            let is_lower = ident.to_string().chars().next().is_some_and(|c| c.is_lowercase());
             is_lower.then_some(&type_path.path.segments[0].ident)
         }
         _ => None,
@@ -1045,11 +986,6 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
         out
     };
 
-
     // println!("{}", out);
-
-    // let out = quote! {
-    //
-    // };
     out.into()
 }

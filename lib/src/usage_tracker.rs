@@ -1,5 +1,3 @@
-#![cfg(usage_tracking_enabled)]
-
 use crate::default;
 use crate::Label;
 use crate::OptUsage;
@@ -8,6 +6,7 @@ use crate::Bool;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::rc::Rc;
 
 // ===============
 // === Logging ===
@@ -37,7 +36,7 @@ fn warning_no_count_check(msg: &str) {
 const MAX_WARNING_COUNT: usize = 100;
 
 thread_local! {
-    static WARNING_COUNT: Cell<usize> = Cell::new(0);
+    static WARNING_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 fn inc_and_check_warning_count() -> bool {
@@ -70,18 +69,25 @@ struct UsageResult {
 #[cfg(usage_tracking_enabled)]
 #[derive(Clone, Debug)]
 pub struct UsageTracker {
-    data: Arc<std::cell::RefCell<UsageTrackerData>>,
+    data: Rc<std::cell::RefCell<UsageTrackerData>>,
 }
 
 #[cfg(usage_tracking_enabled)]
 impl UsageTracker {
     #[track_caller]
     pub fn new() -> Self {
-        Self { data: Arc::new(std::cell::RefCell::new(UsageTrackerData::new())) }
+        Self { data: Rc::new(std::cell::RefCell::new(UsageTrackerData::new())) }
     }
 
     fn set_usage(&self, label: Label, usage: UsageResult) {
         self.data.borrow_mut().map.push((label, usage));
+    }
+}
+
+impl Default for UsageTracker {
+    #[track_caller]
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -187,11 +193,11 @@ impl<Enabled: Bool> Drop for FieldUsageTracker<Enabled> {
     fn drop(&mut self) {
         let needed = self.needed_usage.get();
         self.register_parent_needed_usage(needed);
-        let enabled = !self.disabled.get() && Enabled::to_bool();
+        let enabled = !self.disabled.get() && Enabled::bool();
         if enabled {
             let requested = self.requested_usage;
             let usage = UsageResult { requested, needed };
-            self.tracker.as_mut().map(|t| t.set_usage(self.label, usage));
+            if let Some(t) = self.tracker.as_mut() { t.set_usage(self.label, usage) }
             if needed < requested {
                 // We don't want to report error on parent unless children are fixed.
                 self.register_parent_needed_usage(Some(Usage::Mut))
@@ -234,7 +240,7 @@ impl<Enabled: Bool> FieldUsageTracker<Enabled> {
 
     pub(crate) fn clone_disabled<E: Bool>(&self) -> FieldUsageTracker<E> {
         let label = self.label;
-        let requested_usage = self.requested_usage.clone();
+        let requested_usage = self.requested_usage;
         let needed_usage = self.needed_usage.clone();
         let parent_needed_usage = self.parent_needed_usage.clone();
         let disabled = Cell::new(true);

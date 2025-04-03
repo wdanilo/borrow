@@ -5,43 +5,41 @@
 //!
 //! # 🔪 Partial Borrows
 //!
-//! Zero-overhead
-//! ["partial borrows"](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020),
-//! borrows of selected fields only, **including partial self-borrows**. It lets you split structs
-//! into non-overlapping sets of mutably borrowed fields, like `&<mut field1, field2>MyStruct` and
-//! `&<field2, mut field3>MyStruct`. It is similar to
-//! [slice::split_at_mut](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut)
-//! but more flexible and tailored for structs.
+//! Zero-cost
+//! ["partial borrows"](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020)
+//! — the ability to borrow only selected fields of a struct, including **partial self-borrows**.
+//! This allows splitting a struct into disjoint, mutably borrowed field sets, such as
+//! `&<mut field1, field2>MyStruct` and `&<field2, mut field3>MyStruct`. It is conceptually
+//! similar to [slice::split_at_mut](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut),
+//! but tailored for structs and more flexible.
 //!
 //! <br/>
 //! <br/>
 //!
-//! # 🤩 Why partial borrows? Examples included!
+//! # 🤩 Why Partial Borrows? With Examples!
 //!
-//! Partial borrows offer a variety of advantages. Each of the following points includes a short
-//! in-line explanation with a link to an example code with a detailed explanation:
+//! Partial borrows provide several advantages. Each point below includes a brief explanation and a
+//! link to a detailed example:
 //!
-//! #### [🪢 You can partially borrow self in methods (click to see example)](doc::self_borrow)
-//! You can call a function that takes partially borrowed fields from `&mut self` while holding
-//! references to other parts of `Self`, even if it contains private fields.
+//! #### [🪢 You can partially borrow `self` in methods (click to see example)](doc::self_borrow)
+//! Allows invoking functions that take only specific fields of `&mut self` while simultaneously
+//! accessing other fields of `self`, even if some are private.
 //!
-//! #### [👓 Partial borrows make your code more readable and less error-prone (click to see example).](doc::readability)
-//! They allow you to drastically shorten function signatures and their usage places. They also
-//! enable you to keep the code unchanged, e.g., after adding a new field to a struct, instead of
-//! manually refactoring in potentially many places.
+//! #### [👓 Improves code readability and reduces errors (click to see example)](doc::readability)
+//! Enables significantly shorter function signatures and usage. It also allows you to leave the code
+//! unchanged after adding new fields to a struct — no need for extensive refactoring.
 //!
-//! #### [🚀 Partial borrows improve performance (click to see example)](doc::performance)
-//! Passing a single partial reference is more efficient than passing multiple separate references,
+//! #### [🚀 Boosts performance (click to see example)](doc::performance)
+//! Passing a single partial reference is more efficient than passing multiple individual references,
 //! resulting in better-optimized code.
 //!
 //! <br/>
 //! <br/>
 //!
-//! # 📖 Other literature
+//! # 📖 Further Reading
 //!
-//! In real-world applications, the lack of partial borrows often affects API design, making code
-//! hard to maintain and understand. This issue has been described multiple times over the years.
-//! Some of the most notable discussions include:
+//! The lack of partial borrows often complicates API design in real-world applications, leading to
+//! code that is harder to maintain and understand. The topic has been discussed extensively:
 //!
 //! - [Rust Internals "Notes on partial borrow"](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020).
 //! - [The Rustonomicon "Splitting Borrows"](https://doc.rust-lang.org/nomicon/borrow-splitting.html).
@@ -55,9 +53,9 @@
 //!
 //! # 📖 TL;DR Example
 //!
-//! As example is worth more than a thousand words, let's start with a simple code. Please note that
-//! it is a very simple version which doesn't show the full power of partial borrows. However, it is
-//! a good starting example, that we will be further investigating in the following sections.
+//! A simple example is worth more than a thousand words. The code below demonstrates the basics of
+//! partial borrows. While simple, it serves as a good starting point for the more advanced examples
+//! discussed later.
 //!
 //! ```
 //! use std::vec::Vec;
@@ -164,8 +162,8 @@
 //!
 //! # 📖 `borrow::Partial` derive macro
 //!
-//! This crate provides the `borrow::Partial` derive macro, which lets your structs be borrowed
-//! partially. Let's consider the previous definition of the `Graph` struct:
+//! This crate provides the `borrow::Partial` derive macro, which enables partial borrows for your
+//! structs. Let’s revisit the `Graph` struct:
 //!
 //! ```
 //! # use std::vec::Vec;
@@ -198,9 +196,9 @@
 //! }
 //! ```
 //!
-//! All partial borrows of the `Graph` struct will be represented as `&mut GraphRef<Graph, ...>>`
-//! with type parameters instantiated to one of `&T`, `&mut T`, or `Hidden`, a marker for fields
-//! inaccessible in the current borrow. The generated `GraphRef` can be simplified to the following:
+//! All partial borrows of this struct are represented as `&mut GraphRef<Graph, ...>` with type
+//! parameters instantiated to `&T`, `&mut T`, or `Hidden` (a marker indicating an inaccessible
+//! field). Here's a simplified version of what `GraphRef` looks like:
 //!
 //! ```
 //! # pub struct Graph {
@@ -212,17 +210,18 @@
 //! # pub struct Edge;
 //! # pub struct Group;
 //! #
-//! pub struct GraphRef<__Self__, Nodes, Edges, Groups> {
+//! pub struct GraphRef<__Self__, __Tracking__, Nodes, Edges, Groups> {
 //!     pub nodes:  Nodes,
 //!     pub edges:  Edges,
 //!     pub groups: Groups,
-//!     marker:     std::marker::PhantomData<__Self__>,
+//!     marker:     std::marker::PhantomData<(__Self__, __Tracking__)>,
 //! }
 //!
 //! impl Graph {
 //!     pub fn as_refs_mut(&mut self) ->
 //!        GraphRef<
 //!            Self,
+//!            borrow::True,
 //!            &mut Vec<Node>,
 //!            &mut Vec<Edge>,
 //!            &mut Vec<Group>,
@@ -238,11 +237,19 @@
 //! }
 //! ```
 //!
-//! In reality, the `GraphRef` struct is a bit more complex, providing runtime diagnostics about
-//! unused borrowed fields, which is described later in this doc. The diagnostics adds a significant
-//! runtime overhead to every partial borrow, however, when compiled in release mode, the overhead
-//! is zero, and the struct is optimized to the same as the simplified version. Let's see how the
-//! `GraphRef` struct looks like in reality:
+//! As you see, there are two special phantom parameters: `__Self__` and `__Tracking__`. The former
+//! is always instantiated with the original struct type (in this case, `Graph`) and is used to
+//! track type parameters when working with generic or polymorphic structs. This is especially
+//! useful when defining traits for partially borrowed types.
+//!
+//! The latter parameter, `__Tracking__`, controls whether the system should emit diagnostics
+//! related to unused borrowed fields.
+//!
+//! In reality, the `GraphRef` struct is slightly more complex to support runtime diagnostics for
+//! unused borrows. These diagnostics introduce a small performance overhead, but only in debug
+//! builds. When compiled in release mode, the structure is optimized to match the simplified
+//! version, and the overhead is completely eliminated. Let’s look at what the actual `GraphRef`
+//! structure looks like:
 //!
 //! ```
 //! # pub struct Graph {
@@ -256,10 +263,10 @@
 //! #
 //! pub struct GraphRef<__Self__, __Tracking__, Nodes, Edges, Groups>
 //! where __Tracking__: borrow::Bool {
-//!     pub nodes:     borrow::Field<__Tracking__, Nodes>,
-//!     pub edges:     borrow::Field<__Tracking__, Edges>,
-//!     pub groups:    borrow::Field<__Tracking__, Groups>,
-//!     marker:        std::marker::PhantomData<__Self__>,
+//!     pub nodes:  borrow::Field<__Tracking__, Nodes>,
+//!     pub edges:  borrow::Field<__Tracking__, Edges>,
+//!     pub groups: borrow::Field<__Tracking__, Groups>,
+//!     marker:     std::marker::PhantomData<__Self__>,
 //!     // In release mode this is optimized away.
 //!     usage_tracker: borrow::UsageTracker,
 //! }
@@ -304,9 +311,9 @@
 //! }
 //! ```
 //!
-//! Please note, that both the `borrow::UsageTracker` struct and the `borrow::Field` wrapper are
-//! zero-overhead when compiled with optimizations, and are used to provide diagnostics about unused
-//! borrowed fields, which is described later in this doc.
+//! Note: both the `borrow::UsageTracker` and `borrow::Field` wrappers are fully optimized out in
+//! release builds, ensuring zero runtime overhead. They exist solely to provide enhanced
+//! diagnostics about unused field borrows, as explained later in this documentation.
 //!
 //! <br/>
 //! <br/>
@@ -314,9 +321,9 @@
 //! # 📖 `borrow::partial` (`p!`) macro
 //!
 //! This crate provides the `borrow::partial` macro, which we recommend importing under a shorter
-//! alias `p` for concise syntax. The macro can be used both on type level to express type of a
-//! partially borrowed struct and on value level to create a new partial borrow. Let's see how the
-//! macro expansion works. Given the code:
+//! alias, `p`, for convenience. The macro can be used both at the type level to specify the type of
+//! a partial borrow, and at the value level to create a partial borrow instance. Let's see how the
+//! macro expands. Given the code:
 //!
 //! ```
 //! # use std::vec::Vec;
@@ -347,7 +354,7 @@
 //! }
 //! ```
 //!
-//! It will expand to:
+//! It will expand to the following:
 //!
 //! ```
 //! # use std::vec::Vec;
@@ -396,14 +403,14 @@
 //!
 //! <sub></sub>
 //!
-//! More formally, the macro implements the syntax proposed in
-//! [Rust Internals "Notes on partial borrow"](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020),
-//! extended with utilities for increased expressiveness:
+//! More formally, the macro implements syntax as proposed in the
+//! [Rust Internals: Notes on Partial Borrow](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020),
+//! and extends it with utilities for increased flexibility:
 //!
 //! <sub></sub>
 //!
 //! 1. **Field References**<br/>
-//!    You can parameterize a reference by providing field names this reference should contain.
+//!    You can specify which fields to borrow by naming them explicitly.
 //!
 //!    ```
 //!    # use std::vec::Vec;
@@ -433,7 +440,7 @@
 //!    <sub></sub>
 //!
 //! 2. **Field Selectors**<br/>
-//!    You can use `*` to include all. Later selectors override previous ones.
+//!    Use `*` to include all fields. Later selectors override earlier ones.
 //!
 //!    ```
 //!    # use std::vec::Vec;
@@ -463,8 +470,8 @@
 //!    <sub></sub>
 //!
 //! 3. **Lifetime Annotations**<br/>
-//!    You can specify lifetimes for each reference. If a lifetime is not provided, it defaults to
-//!    `'_`. You can override the default lifetime by providing it after the `&` symbol.
+//!    You can attach lifetimes to each reference. If not specified, `'_` is used by default. You can
+//!    override the default by attaching lifetimes after the `&`.
 //!
 //!    ```
 //!    # use std::vec::Vec;
@@ -498,11 +505,13 @@
 //!    ```
 //!
 //! 4. **Owned Borrows**<br/>
-//!    You can omit the `&` symbol to create an owned borrow. For example, `p!(&<mut *>Graph)`
-//!    expands to `&mut GraphRef<Graph, ...>>`, while `p!(<mut *>Graph)` expands to
-//!    `GraphRef<Graph, ...>`. This is especially handy when defining methods or implementing traits
-//!    for partial borrows, as in many cases Rust doesn't allow to implement traits for built-in
-//!    types, like references.
+//!    You can omit the `&` to create an owned partial borrow. For example:
+//!
+//!    - `p!(&<mut *> Graph)` expands to `&mut GraphRef<...>`.
+//!    - `p!(<mut *> Graph)` expands to `GraphRef<...>`.
+//!
+//!    This is especially useful when defining methods or implementing traits for partial borrows,
+//!    as traits can't be implemented for reference types directly in many cases.
 //!
 //!    ```
 //!    # use std::vec::Vec;
@@ -536,17 +545,15 @@
 //!
 //! # 📖 The `partial_borrow`, `split`, and `borrow_$field` methods.
 //!
-//! The partially borrowed struct exposes several methods that let you transform one partial borrow
-//! into another. Please note that the `p!` macro can be also used as a shorthand for the
-//! `partial_borrow` method.
+//! Partially borrowed structs expose a set of methods that allow transforming one partial borrow
+//! into another. The `p!` macro can also be used as shorthand for the `partial_borrow` method.
 //!
 //! <sub></sub>
 //!
 //! - `fn partial_borrow<'s, Target>(&'s mut self) -> Target where Self: Partial<'s, Target>`<br/>
-//!    Lets you borrow only the fields required by the target type. Please note that
-//!    you do not have to use the `as_refs_mut` method to get a partial borrow of a struct. You can
-//!    use `partial_borrow` immediately, which will automatically use `as_refs_mut` under the hood
-//!    and then borrow the requested fields only.
+//!    Allows borrowing only the fields specified by the target type. You don’t need to call
+//!   `as_refs_mut` explicitly, `partial_borrow` handles it internally.
+//!
 //!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
@@ -597,7 +604,8 @@
 //!
 //!    <sub></sub>
 //!
-//! - `split` is like `partial_borrow` but also returns a borrow of the remaining fields.
+//! - `fn split<'s, Target>(&'s mut self) -> (Target, Self::Rest) where Self: Partial<'s, Target>`<br/>
+//!    Similar to `partial_borrow`, but also returns a borrow of the remaining fields.
 //!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
@@ -659,8 +667,8 @@
 //!
 //! <sub></sub>
 //!
-//! The following example demonstrates usage of these functions. Read the comments in the code to
-//! learn more. You can also find this example in the `tests` directory.
+//! The following example demonstrates how to use these functions in practice. Refer to comments
+//! in the source for additional context. This example is also available in the `tests` directory.
 //!
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
@@ -801,7 +809,8 @@
 //!
 //! # Partial borrows of self in methods
 //!
-//! The above example can be rewritten to use partial borrows of `self` in methods.
+//! The example above can be rewritten to use partial borrows directly on `self` in method
+//! implementations.
 //!
 //!
 //! <details>
@@ -1049,13 +1058,17 @@
 //!
 //! # Unused borrows tracking
 //!
-//! It's very easy to maintain the minimum set of borrowed fields for all of your functions,
-//! especially after refactoring. That's why this crate provides a way to track unused borrows.
-//! Unlike standard Rust and Clippy lints, unused partial borrows diagnostic is performed at
-//! runtime and adds a significant performance overhead to every borrow. You can disable it
-//! and completely optimize away either by using the release build mode or by setting the
-//! `no_usage_tracking` feature. Alternatively, you can enforce it in release mode by using the
-//! `usage_tracking` feature.
+//! This crate makes it easy to keep track of which fields are actually used, which is helpful
+//! when refactoring or trying to minimize the set of required borrows.
+//!
+//! Unlike standard Rust or Clippy lints, diagnostics for unused borrows are performed **at runtime**,
+//! and they **incur overhead in debug builds**. The diagnostics can be disabled or optimized away
+//! entirely using the following mechanisms:
+//!
+//! - Enabled by default in debug builds.
+//! - Disabled in release builds.
+//! - Can be turned off explicitly with the `no_usage_tracking` feature.
+//! - Can be forced on in release with the `usage_tracking` feature.
 //!
 //! Consider the following code:
 //!
@@ -1102,7 +1115,7 @@
 //!     To fix the issue, use: &<mut edges, mut nodes>.
 //! ```
 //!
-//! After fixing the code, the code works without warnings:
+//! After fixing, it becomes:
 //!
 //! ```
 //! # use std::vec::Vec;
@@ -1126,23 +1139,112 @@
 //! }
 //!
 //! fn pass1(mut graph: p!(&<mut edges, nodes> Graph)) {
-//!     let _ = &mut *graph.edges; // Simulate mut usage of edges.
+//!     // Simulate mut usage of edges.
+//!     let _ = &mut *graph.edges;
 //!     pass2(p!(&mut graph));
 //! }
 //!
 //! fn pass2(mut graph: p!(&<nodes> Graph)) {
-//!     let _ = &*graph.nodes; // Simulate ref usage of nodes.
+//!     // Simulate ref usage of nodes.
+//!     let _ = &*graph.nodes;
 //! }
 //! ```
 //!
-//! There are, however, two special cases we should consider. The first one is when we pass a
-//! partial borrow to a trait method that we consider an interface.
+//! ### Special Case 1: Trait Interface
+//!
+//! When passing a partial borrow into a trait method you consider an interface, you might not want
+//! the diagnostics to complain about unused fields. You can prefix the `&` with `_` to silence tracking:
+//!
+//!
+//! ```
+//! # use std::vec::Vec;
+//! # use borrow::partial as p;
+//! # use borrow::traits::*;
+//! struct Node;
+//! struct Edge;
+//! struct Group;
+//!
+//! #[derive(borrow::Partial, Default)]
+//! #[module(crate)]
+//! struct Graph {
+//!     pub nodes:  Vec<Node>,
+//!     pub edges:  Vec<Edge>,
+//!     pub groups: Vec<Group>,
+//! }
+//!
+//! trait RenderPass {
+//!     fn run_pass(graph: p!(_&<mut *> Graph));
+//! }
+//!
+//! struct MyRenderPass;
+//! impl RenderPass for MyRenderPass {
+//!     fn run_pass(graph: p!(_&<mut *> Graph)) {
+//!         // Simulate mut usage of edges.
+//!         let _ = &mut *graph.edges;
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let mut graph = Graph::default();
+//!     // No warnings here.
+//!     MyRenderPass::run_pass(p!(&mut graph));
+//! }
+//! ```
+//!
+//! ### Special Case 2: Conditional Use
+//!
+//! If your function uses a borrow only under certain conditions, you can silence the warnings
+//! by manually marking all fields as used:
+//!
+//! ```
+//! # use std::vec::Vec;
+//! # use borrow::partial as p;
+//! # use borrow::traits::*;
+//! struct Node;
+//! struct Edge;
+//! struct Group;
+//!
+//! #[derive(borrow::Partial, Default)]
+//! #[module(crate)]
+//! struct Graph {
+//!     pub nodes:  Vec<Node>,
+//!     pub edges:  Vec<Edge>,
+//!     pub groups: Vec<Group>,
+//! }
+//!
+//! fn main() {
+//!     let mut graph = Graph::default();
+//!     pass1(true, p!(&mut graph));
+//!     pass1(false, p!(&mut graph));
+//! }
+//!
+//! fn pass1(run2: bool, mut graph: p!(&<mut edges, nodes> Graph)) {
+//!     // Simulate mut usage of edges.
+//!     let _ = &mut *graph.edges;
+//!     if run2 {
+//!         pass2(p!(&mut graph));
+//!     } else {
+//!         // Disable field usage tracking for this condition.
+//!         graph.mark_all_fields_as_used();
+//!     }
+//! }
+//!
+//! fn pass2(mut graph: p!(&<nodes> Graph)) {
+//!     // Simulate ref usage of nodes.
+//!     let _ = &*graph.nodes;
+//! }
+//! ```
+//!
+//! If the struct isn’t used at all, Clippy will still warn you about the unused variable, but
+//! partial borrow diagnostics will be suppressed.
 //!
 //! <br/>
 //! <br/>
 
 #![cfg_attr(not(usage_tracking_enabled), allow(unused_imports))]
 #![cfg_attr(not(usage_tracking_enabled), allow(dead_code))]
+
+extern crate self as borrow;
 
 pub mod doc;
 pub mod hlist;
@@ -1171,26 +1273,6 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
 
-
-pub trait Bool {
-    fn to_bool() -> bool;
-}
-
-pub struct True;
-pub struct False;
-
-impl Bool for True {
-    fn to_bool() -> bool {
-        true
-    }
-}
-
-impl Bool for False {
-    fn to_bool() -> bool {
-        false
-    }
-}
-
 // ==============
 // === Traits ===
 // ==============
@@ -1211,6 +1293,33 @@ pub mod traits {
 fn default<T: Default>() -> T {
     T::default()
 }
+
+// ============
+// === Bool ===
+// ============
+
+pub trait Bool {
+    fn bool() -> bool;
+}
+
+pub struct True;
+pub struct False;
+
+impl Bool for True {
+    fn bool() -> bool {
+        true
+    }
+}
+
+impl Bool for False {
+    fn bool() -> bool {
+        false
+    }
+}
+
+// =============
+// === Label ===
+// =============
 
 #[doc(hidden)]
 pub type Label = &'static str;
@@ -1242,60 +1351,62 @@ pub trait HasUsageTrackedFields {
 // === Field ===
 // =============
 
+/// Field that tracks usage of its value. The `Enabled` type parameter is used to determine whether
+/// the tracking is enabled.
 #[doc(hidden)]
 #[derive(Debug)]
 #[cfg_attr(not(usage_tracking_enabled), repr(transparent))]
-pub struct Field<E: Bool, T> {
-    pub value_no_usage_tracking: T,
+pub struct Field<Enabled: Bool, V> {
+    pub value_no_usage_tracking: V,
     #[cfg(usage_tracking_enabled)]
-    usage_tracker: FieldUsageTracker<E>,
-    type_marker: PhantomData<E>,
+    tracker: FieldUsageTracker<Enabled>,
+    type_marker: PhantomData<Enabled>,
 }
 
-impl<Enabled: Bool, T> Field<Enabled, T> {
+impl<E: Bool, V> Field<E, V> {
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    pub fn new(label: Label, requested_usage: OptUsage, value: T, tracker: UsageTracker) -> Self {
+    pub fn new(label: Label, requested_usage: OptUsage, value: V, tracker: UsageTracker) -> Self {
         let usage_tracker = FieldUsageTracker::new(label, requested_usage, tracker);
         Self::cons(value, usage_tracker)
     }
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    pub fn new(_label: Label, _requested_usage: OptUsage, value: T, _tracker: UsageTracker) -> Self {
+    pub fn new(_label: Label, _req_usage: OptUsage, value: V, _tracker: UsageTracker) -> Self {
         Self::cons(value)
     }
 
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn cons(value_no_usage_tracking: T, usage_tracker: FieldUsageTracker<Enabled>) -> Self {
+    fn cons(value_no_usage_tracking: V, tracker: FieldUsageTracker<E>) -> Self {
         let type_marker = PhantomData;
-        Self { value_no_usage_tracking, usage_tracker, type_marker }
+        Self { value_no_usage_tracking, tracker, type_marker }
     }
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn cons(value_no_usage_tracking: T) -> Self {
+    fn cons(value_no_usage_tracking: V) -> Self {
         let type_marker = PhantomData;
         Self { value_no_usage_tracking, type_marker }
     }
 
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn clone_as_hidden<E: Bool>(&self) -> Field<E, Hidden> {
-        Field::cons(Hidden, self.usage_tracker.clone_disabled())
+    fn clone_as_hidden<E2: Bool>(&self) -> Field<E2, Hidden> {
+        Field::cons(Hidden, self.tracker.clone_disabled())
     }
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn clone_as_hidden<E: Bool>(&self) -> Field<E, Hidden> {
+    fn clone_as_hidden<E2: Bool>(&self) -> Field<E2, Hidden> {
         Field::cons(Hidden)
     }
 
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     pub fn disable_usage_tracking(&self) {
-        self.usage_tracker.disable();
+        self.tracker.disable();
     }
 
     #[inline(always)]
@@ -1305,7 +1416,7 @@ impl<Enabled: Bool, T> Field<Enabled, T> {
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
     pub fn mark_as_used(&self) {
-        self.usage_tracker.register_usage(Some(Usage::Mut));
+        self.tracker.register_usage(Some(Usage::Mut));
     }
 
     #[inline(always)]
@@ -1318,7 +1429,7 @@ impl<E: Bool, T> Deref for Field<E, T> {
     #[inline(always)]
     fn deref(&self) -> &T {
         #[cfg(usage_tracking_enabled)]
-        self.usage_tracker.register_usage(Some(Usage::Ref));
+        self.tracker.register_usage(Some(Usage::Ref));
         &self.value_no_usage_tracking
     }
 }
@@ -1327,7 +1438,7 @@ impl<E: Bool, T> DerefMut for Field<E, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         #[cfg(usage_tracking_enabled)]
-        self.usage_tracker.register_usage(Some(Usage::Mut));
+        self.tracker.register_usage(Some(Usage::Mut));
         &mut self.value_no_usage_tracking
     }
 }
@@ -1339,7 +1450,7 @@ where &'t T: IntoIterator {
     #[inline(always)]
     fn into_iter(self) -> Self::IntoIter {
         #[cfg(usage_tracking_enabled)]
-        self.usage_tracker.register_usage(Some(Usage::Ref));
+        self.tracker.register_usage(Some(Usage::Ref));
         self.value_no_usage_tracking.into_iter()
     }
 }
@@ -1351,7 +1462,7 @@ where &'t mut T: IntoIterator {
     #[inline(always)]
     fn into_iter(self) -> Self::IntoIter {
         #[cfg(usage_tracking_enabled)]
-        self.usage_tracker.register_usage(Some(Usage::Mut));
+        self.tracker.register_usage(Some(Usage::Mut));
         self.value_no_usage_tracking.into_iter()
     }
 }
@@ -1386,9 +1497,10 @@ impl<'s, E: Bool> CloneField<'s, E> for Field<E, Hidden> {
     type Cloned = Hidden;
     #[cfg(usage_tracking_enabled)]
     fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
-        let usage_tracker = self.usage_tracker.clone_disabled();
+        let usage_tracker = self.tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
+    #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
         Field::cons(self.value_no_usage_tracking)
@@ -1399,22 +1511,24 @@ impl<'s, 't, E: Bool, T> CloneField<'s, E> for Field<E, &'t T> {
     type Cloned = &'t T;
     #[cfg(usage_tracking_enabled)]
     fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
-        let usage_tracker = self.usage_tracker.clone_disabled();
+        let usage_tracker = self.tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
+    #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
         Field::cons(self.value_no_usage_tracking)
     }
 }
 
-impl<'s, 't, E: Bool, T: 's> CloneField<'s, E> for Field<E, &'t mut T> {
+impl<'s, E: Bool, T: 's> CloneField<'s, E> for Field<E, &mut T> {
     type Cloned = &'s mut T;
     #[cfg(usage_tracking_enabled)]
     fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
-        let usage_tracker = self.usage_tracker.clone_disabled();
+        let usage_tracker = self.tracker.clone_disabled();
         Field::cons(self.value_no_usage_tracking, usage_tracker)
     }
+    #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
     fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
         Field::cons(self.value_no_usage_tracking)
@@ -1469,27 +1583,34 @@ pub struct AcquireMarker;
 #[doc(hidden)]
 pub trait Acquire<This, Target> {
     type Rest;
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, This>, tracker: UsageTracker) -> (Field<E1, Target>, Field<E, Self::Rest>);
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, This>,
+        tracker: UsageTracker
+    ) -> (Field<E2, Target>, Field<E1, Self::Rest>);
 }
 
 impl<'t, T> Acquire<&'t mut T, Hidden> for AcquireMarker {
     type Rest = &'t mut T;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
-        )
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled());
+        (target, rest)
     }
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            Field::cons(this.value_no_usage_tracking)
-        )
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
     }
 }
 
@@ -1497,20 +1618,24 @@ impl<'t, T> Acquire<&'t T, Hidden> for AcquireMarker {
     type Rest = &'t T;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t T>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
-        )
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t T>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled());
+        (target, rest)
     }
 
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t T>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            Field::cons(this.value_no_usage_tracking)
-        )
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t T>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
     }
 }
 
@@ -1518,19 +1643,23 @@ impl Acquire<Hidden, Hidden> for AcquireMarker {
     type Rest = Hidden;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, Hidden>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled())
-        )
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, Hidden>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled());
+        (target, rest)
     }
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, Hidden>, _: UsageTracker) -> (Field<E1, Hidden>, Field<E, Self::Rest>) {
-        (
-            this.clone_as_hidden(),
-            Field::cons(this.value_no_usage_tracking)
-        )
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, Hidden>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
     }
 }
 
@@ -1539,22 +1668,26 @@ where 't: 'y {
     type Rest = Hidden;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, usage_tracker: UsageTracker)
-    -> (Field<E1, &'y mut T>, Field<E, Self::Rest>) {
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        tracker: UsageTracker
+    ) -> (Field<E2, &'y mut T>, Field<E1, Self::Rest>) {
         let rest = this.clone_as_hidden();
-        (
-            Field::cons(
-                this.value_no_usage_tracking,
-                this.usage_tracker.new_child(Usage::Mut, usage_tracker)
-            ),
-            rest
-        )
+        let target = Field::cons(
+            this.value_no_usage_tracking,
+            this.tracker.new_child(Usage::Mut, tracker)
+        );
+        (target, rest)
     }
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, _: UsageTracker) -> (Field<E1, &'y mut T>, Field<E, Self::Rest>) {
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        _: UsageTracker
+    ) -> (Field<E2, &'y mut T>, Field<E1, Self::Rest>) {
         let rest = this.clone_as_hidden();
-        (Field::cons(this.value_no_usage_tracking), rest)
+        let target = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
     }
 }
 
@@ -1563,18 +1696,24 @@ where 't: 'y {
     type Rest = &'t T;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, usage_tracker: UsageTracker) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        tracker: UsageTracker
+    ) -> (Field<E2, &'y T>, Field<E1, Self::Rest>) {
         (
             Field::cons(
                 this.value_no_usage_tracking,
-                this.usage_tracker.new_child(Usage::Ref, usage_tracker)
+                this.tracker.new_child(Usage::Ref, tracker)
             ),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
+            Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled()),
         )
     }
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t mut T>, _: UsageTracker) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
+    fn acquire<E: Bool, E1: Bool>(
+        this: Field<E, &'t mut T>,
+        _: UsageTracker
+    ) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
         (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking))
     }
 }
@@ -1584,19 +1723,26 @@ where 't: 'y {
     type Rest = &'t T;
     #[inline(always)]
     #[cfg(usage_tracking_enabled)]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t T>, usage_tracker: UsageTracker) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
-        (
-            Field::cons(
-                this.value_no_usage_tracking,
-                this.usage_tracker.new_child(Usage::Ref, usage_tracker)
-            ),
-            Field::cons(this.value_no_usage_tracking, this.usage_tracker.new_child_disabled()),
-        )
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t T>,
+        tracker: UsageTracker
+    ) -> (Field<E2, &'y T>, Field<E1, Self::Rest>) {
+        let target = Field::cons(
+            this.value_no_usage_tracking,
+            this.tracker.new_child(Usage::Ref, tracker)
+        );
+        let rest = Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled());
+        (target, rest)
     }
     #[inline(always)]
     #[cfg(not(usage_tracking_enabled))]
-    fn acquire<E: Bool, E1: Bool>(this: Field<E, &'t T>, _: UsageTracker) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
-        (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking),)
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t T>,
+        _: UsageTracker
+    ) -> (Field<E2, &'y T>, Field<E1, Self::Rest>) {
+        let target = Field::cons(this.value_no_usage_tracking);
+        let rest = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
     }
 }
 
@@ -1607,7 +1753,7 @@ where 't: 'y {
 #[doc(hidden)]
 pub trait AsRefsMut {
     type Target<'t> where Self: 't;
-    fn as_refs_mut<'t>(&'t mut self) -> Self::Target<'t>;
+    fn as_refs_mut(&mut self) -> Self::Target<'_>;
 }
 
 // ===============
@@ -1660,7 +1806,7 @@ impl<T> PartialHelper for T {}
 
 // === Default Impl ===
 
-impl<'s, T, Target> borrow::Partial<'s, Target> for T where
+impl<'s, T, Target> Partial<'s, Target> for T where
     T: AsRefsMut + 's,
     <T as AsRefsMut>::Target<'s>: IntoPartial<Target>,
 {
@@ -1672,9 +1818,9 @@ impl<'s, T, Target> borrow::Partial<'s, Target> for T where
     }
 }
 
-// ===========
-// === GEN ===
-// ===========
+// =====================
+// === Helper Macros ===
+// =====================
 
 #[doc(hidden)]
 #[macro_export]
@@ -1683,37 +1829,39 @@ macro_rules! field {
     ($s:ty, $n:tt, $($ts:tt)+) => { $($ts)+ borrow::ItemAt<borrow::$n, borrow::Fields<$s>> };
 }
 
-extern crate self as borrow;
+// =============
+// === Tests ===
+// =============
 
-use borrow::partial as p;
-
-pub struct GeometryCtx {}
-pub struct MaterialCtx {}
-pub struct MeshCtx {}
-pub struct SceneCtx {}
-
-#[derive(borrow::Partial)]
-#[module(crate)]
-pub struct Ctx<'t, T: Debug> {
-    pub version: &'t T,
-    pub geometry: GeometryCtx,
-    pub material: MaterialCtx,
-    pub mesh: MeshCtx,
-    pub scene: SceneCtx,
-}
-
-pub fn test() {
-    let mut ctx = Ctx {
-        version: &0,
-        geometry: GeometryCtx {},
-        material: MaterialCtx {},
-        mesh: MeshCtx {},
-        scene: SceneCtx {},
-    };
-    test2(p!(&mut ctx));
-}
-
-pub fn test2<'t>(ctx: p!(&<mut *> Ctx<'t, usize>)) {
-    let _ = &*ctx.version;
-}
-
+// use borrow::partial as p;
+//
+// pub struct GeometryCtx {}
+// pub struct MaterialCtx {}
+// pub struct MeshCtx {}
+// pub struct SceneCtx {}
+//
+// #[derive(borrow::Partial)]
+// #[module(crate)]
+// pub struct Ctx<'t, T: Debug> {
+//     pub version: &'t T,
+//     pub geometry: GeometryCtx,
+//     pub material: MaterialCtx,
+//     pub mesh: MeshCtx,
+//     pub scene: SceneCtx,
+// }
+//
+// pub fn test() {
+//     let mut ctx = Ctx {
+//         version: &0,
+//         geometry: GeometryCtx {},
+//         material: MaterialCtx {},
+//         mesh: MeshCtx {},
+//         scene: SceneCtx {},
+//     };
+//     test2(p!(&mut ctx));
+// }
+//
+// pub fn test2<'t>(ctx: p!(&<mut *> Ctx<'t, usize>)) {
+//     let _ = &*ctx.version;
+// }
+//
