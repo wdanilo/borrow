@@ -322,7 +322,7 @@
 //!
 //! This crate provides the `borrow::partial` macro, which we recommend importing under a shorter
 //! alias, `p`, for convenience. The macro can be used both at the type level to specify the type of
-//! a partial borrow, and at the value level to create a partial borrow instance. Let's see how the
+//! partial borrow, and at the value level to create a partial borrow instance. Let's see how the
 //! macro expands. Given the code:
 //!
 //! ```
