@@ -221,15 +221,23 @@ pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::
     // ```
     // #[macro_export]
     // macro_rules! CtxMacro {
-    //     (@0 $s:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s [] [] [] [] [] $($ts)* } };
-    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt *        $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $n  $n  $n  $n  $n  $($ts)* } };
-    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt version  $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $n  $t1 $t2 $t3 $t4 $($ts)* } };
-    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt geometry $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $t0 $n  $t2 $t3 $t4 $($ts)* } };
-    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt material $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $t0 $t1 $n  $t3 $t4 $($ts)* } };
-    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt mesh     $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $t0 $t1 $t2 $n  $t4 $($ts)* } };
-    //     (@1 $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt scene    $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $s $t0 $t1 $t2 $t3 $n  $($ts)* } };
-    //     (@1 [$s:ty] [$($t0:tt)*] [$($t1:tt)*] [$($t2:tt)*] [$($t3:tt)*] [$($t4:tt)*] ) => {
-    //         CtxRef<$s, borrow::field!{$s, N0, $($t0)*}, borrow::field!{$s, N1, $($t1)*}, borrow::field!{$s, N2, $($t2)*}, borrow::field!{$s, N3, $($t3)*}, borrow::field!{$s, N4, $($t4)*}>
+    //     (@0 $pfx:tt $track:tt $s:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s [] [] [] [] [] $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt *        $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $n  $n  $n  $n  $n  $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt version  $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $n  $t1 $t2 $t3 $t4 $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt geometry $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $t0 $n  $t2 $t3 $t4 $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt material $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $t0 $t1 $n  $t3 $t4 $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt mesh     $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $t0 $t1 $t2 $n  $t4 $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt scene    $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $t0 $t1 $t2 $t3 $n  $($ts)* } };
+    //     (@1 [$($pfx:tt)*] [$($track:tt)*] [$s:ty] [$($t0:tt)*] [$($t1:tt)*] [$($t2:tt)*] [$($t3:tt)*] [$($t4:tt)*] ) => {
+    //         $($pfx)* CtxRef<
+    //             $s,
+    //             $($track)*,
+    //             borrow::field!{$s, N0, $($t0)*},
+    //             borrow::field!{$s, N1, $($t1)*},
+    //             borrow::field!{$s, N2, $($t2)*},
+    //             borrow::field!{$s, N3, $($t3)*},
+    //             borrow::field!{$s, N4, $($t4)*}
+    //         >
     //     };
     // }
     // pub use CtxMacro as Ctx;
