@@ -4,7 +4,6 @@ use std::vec::Vec;
 use borrow::partial as p;
 use borrow::traits::*;
 
-
 // ============
 // === Data ===
 // ============
@@ -48,8 +47,8 @@ struct Graph {
 // =============
 
 impl p!(<mut *> Graph) {
-    fn detach_all_nodes(&mut self) {
-        let (nodes, self2) = self.extract_nodes();
+    fn detach_all_nodes(mut self) {
+        let (nodes, mut self2) = self.borrow_nodes_mut();
         for node in nodes {
             // Partial self-borrowing occurs here.
             self2.partial_borrow().detach_node(node);
@@ -58,7 +57,7 @@ impl p!(<mut *> Graph) {
 }
 
 impl p!(<mut edges> Graph) {
-    fn detach_node(&mut self, node: &mut Node) {
+    fn detach_node(mut self, node: &mut Node) {
         for edge_id in std::mem::take(&mut node.outputs) {
             self.edges[edge_id].from = None;
         }

@@ -28,7 +28,7 @@
 //!
 //! We opt for the latter approach and create a root registry called `Ctx`:
 //!
-//! ```rust
+//! ```
 //! // === Data ===
 //! pub struct Geometry { /* ... */ }
 //! pub struct Material { /* ... */ }
@@ -247,11 +247,11 @@
 //! #     pub scene: SceneCtx,
 //! # }
 //! #
-//! fn render_pass1(ctx: p!(&<mut *> Ctx)) {
-//!     let (scene, ctx2) = ctx.extract_scene();
+//! fn render_pass1(mut ctx: p!(&<mut *> Ctx)) {
+//!     let (scene, mut ctx2) = ctx.borrow_scene();
 //!     for scene in &scene.data {
 //!         for mesh in &scene.meshes {
-//!             render_scene(ctx2.partial_borrow(), *mesh)
+//!             render_scene(p!(&mut ctx2), *mesh)
 //!         }
 //!     }
 //!     render_pass2(ctx);

@@ -5,43 +5,41 @@
 //!
 //! # 🔪 Partial Borrows
 //!
-//! Zero-overhead
-//! ["partial borrows"](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020),
-//! borrows of selected fields only, **including partial self-borrows**. It lets you split structs
-//! into non-overlapping sets of mutably borrowed fields, like `&<mut field1, field2>MyStruct` and
-//! `&<field2, mut field3>MyStruct`. It is similar to
-//! [slice::split_at_mut](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut)
-//! but more flexible and tailored for structs.
+//! Zero-cost
+//! ["partial borrows"](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020)
+//! — the ability to borrow only selected fields of a struct, including **partial self-borrows**.
+//! This allows splitting a struct into disjoint, mutably borrowed field sets, such as
+//! `&<mut field1, field2>MyStruct` and `&<field2, mut field3>MyStruct`. It is conceptually
+//! similar to [slice::split_at_mut](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut),
+//! but tailored for structs and more flexible.
 //!
 //! <br/>
 //! <br/>
 //!
-//! # 🤩 Why partial borrows? Examples included!
+//! # 🤩 Why Partial Borrows? With Examples!
 //!
-//! Partial borrows offer a variety of advantages. Each of the following points includes a short
-//! in-line explanation with a link to an example code with a detailed explanation:
+//! Partial borrows provide several advantages. Each point below includes a brief explanation and a
+//! link to a detailed example:
 //!
-//! #### [🪢 You can partially borrow self in methods (click to see example)](doc::self_borrow)
-//! You can call a function that takes partially borrowed fields from `&mut self` while holding
-//! references to other parts of `Self`, even if it contains private fields.
+//! #### [🪢 You can partially borrow `self` in methods (click to see example)](doc::self_borrow)
+//! Allows invoking functions that take only specific fields of `&mut self` while simultaneously
+//! accessing other fields of `self`, even if some are private.
 //!
-//! #### [👓 Partial borrows make your code more readable and less error-prone (click to see example).](doc::readability)
-//! They allow you to drastically shorten function signatures and their usage places. They also
-//! enable you to keep the code unchanged, e.g., after adding a new field to a struct, instead of
-//! manually refactoring in potentially many places.
+//! #### [👓 Improves code readability and reduces errors (click to see example)](doc::readability)
+//! Enables significantly shorter function signatures and usage. It also allows you to leave the code
+//! unchanged after adding new fields to a struct — no need for extensive refactoring.
 //!
-//! #### [🚀 Partial borrows improve performance (click to see example)](doc::performance)
-//! Passing a single partial reference is more efficient than passing multiple separate references,
+//! #### [🚀 Boosts performance (click to see example)](doc::performance)
+//! Passing a single partial reference is more efficient than passing multiple individual references,
 //! resulting in better-optimized code.
 //!
 //! <br/>
 //! <br/>
 //!
-//! # 📖 Other literature
+//! # 📖 Further Reading
 //!
-//! In real-world applications, the lack of partial borrows often affects API design, making code
-//! hard to maintain and understand. This issue has been described multiple times over the years.
-//! Some of the most notable discussions include:
+//! The lack of partial borrows often complicates API design in real-world applications, leading to
+//! code that is harder to maintain and understand. The topic has been discussed extensively:
 //!
 //! - [Rust Internals "Notes on partial borrow"](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020).
 //! - [The Rustonomicon "Splitting Borrows"](https://doc.rust-lang.org/nomicon/borrow-splitting.html).
@@ -53,44 +51,119 @@
 //! <br/>
 //! <br/>
 //!
-//! # 📖 `borrow::Partial` derive macro
+//! # 📖 TL;DR Example
 //!
-//! This crate provides the `borrow::Partial` derive macro, which lets your structs be borrowed
-//! partially.
-//!
-//! <details>
-//! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
+//! A simple example is worth more than a thousand words. The code below demonstrates the basics of
+//! partial borrows. While simple, it serves as a good starting point for the more advanced examples
+//! discussed later.
 //!
 //! ```
 //! use std::vec::Vec;
-//!
-//! // ============
-//! // === Data ===
-//! // ============
-//!
-//! type NodeId = usize;
-//! type EdgeId = usize;
-//!
-//! struct Node {
-//!    outputs: Vec<EdgeId>,
-//!    inputs:  Vec<EdgeId>,
-//! }
-//!
-//! struct Edge {
-//!    from: Option<NodeId>,
-//!    to:   Option<NodeId>,
-//! }
-//!
-//! struct Group {
-//!    nodes: Vec<NodeId>,
-//! }
+//! use borrow::partial as p;
+//! use borrow::traits::*;
 //!
 //! // =============
 //! // === Graph ===
 //! // =============
+//!
+//! type NodeId = usize;
+//! type EdgeId = usize;
+//!
+//! #[derive(Debug, borrow::Partial)]
+//! #[module(crate)]
+//! struct Graph {
+//!     nodes:  Vec<Node>,
+//!     edges:  Vec<Edge>,
+//!     groups: Vec<Group>,
+//! }
+//!
+//! /// A node in a graph.
+//! #[derive(Debug)]
+//! struct Node {
+//!     outputs: Vec<EdgeId>,
+//!     inputs:  Vec<EdgeId>,
+//! }
+//!
+//! /// An edge between two nodes.
+//! #[derive(Debug)]
+//! struct Edge {
+//!     from: Option<NodeId>,
+//!     to:   Option<NodeId>,
+//! }
+//!
+//! /// A group (cluster) of nodes.
+//! #[derive(Debug)]
+//! struct Group {
+//!     nodes: Vec<NodeId>,
+//! }
+//!
+//! // =============
+//! // === Utils ===
+//! // =============
+//!
+//! // Requires mutable access to the `graph.edges` field.
+//! fn detach_node(mut graph: p!(&<mut edges> Graph), node: &mut Node) {
+//!     for edge_id in std::mem::take(&mut node.outputs) {
+//!         graph.edges[edge_id].from = None;
+//!     }
+//!     for edge_id in std::mem::take(&mut node.inputs) {
+//!         graph.edges[edge_id].to = None;
+//!     }
+//! }
+//!
+//! // Requires mutable access to all the `graph` fields.
+//! fn detach_all_nodes(mut graph: p!(&<mut *> Graph)) {
+//!     // Borrow the `nodes` field. The `graph2` variable has a type of
+//!     // `p!(&<mut edges, mut groups> Graph)`.
+//!     let (nodes, mut graph2) = graph.borrow_nodes_mut();
+//!     for node in nodes {
+//!         detach_node(p!(&mut graph2), node);
+//!     }
+//! }
+//!
+//! // =============
+//! // === Tests ===
+//! // =============
+//!
+//! fn main() {
+//!     // node0 -----> node1 -----> node2 -----> node0
+//!     //       edge0        edge1        edge2
+//!     let mut graph = Graph {
+//!         nodes: vec![
+//!             Node { outputs: vec![0], inputs: vec![2] }, // Node 0
+//!             Node { outputs: vec![1], inputs: vec![0] }, // Node 1
+//!             Node { outputs: vec![2], inputs: vec![1] }, // Node 2
+//!         ],
+//!         edges: vec![
+//!             Edge { from: Some(0), to: Some(1) }, // Edge 0
+//!             Edge { from: Some(1), to: Some(2) }, // Edge 1
+//!             Edge { from: Some(2), to: Some(0) }, // Edge 2
+//!         ],
+//!         groups: vec![]
+//!     };
+//!
+//!     // Borrow the fields required by the `detach_all_nodes` function.
+//!     detach_all_nodes(p!(&mut graph));
+//!
+//!     for node in &graph.nodes {
+//!         assert!(node.outputs.is_empty());
+//!         assert!(node.inputs.is_empty());
+//!     }
+//!
+//!     for edge in &graph.edges {
+//!         assert!(edge.from.is_none());
+//!         assert!(edge.to.is_none());
+//!     }
+//! }
 //! ```
 //!
-//! </details>
+//! <br/>
+//! <br/>
+//!
+//! # 📖 `borrow::Partial` derive macro
+//!
+//! This crate provides the `borrow::Partial` derive macro, which enables partial borrows for your
+//! structs. Let’s revisit the `Graph` struct:
 //!
 //! ```
 //! # use std::vec::Vec;
@@ -123,7 +196,9 @@
 //! }
 //! ```
 //!
-//! The most important code that this macro generates is:
+//! All partial borrows of this struct are represented as `&mut GraphRef<Graph, ...>` with type
+//! parameters instantiated to `&T`, `&mut T`, or `Hidden` (a marker indicating an inaccessible
+//! field). Here's a simplified version of what `GraphRef` looks like:
 //!
 //! ```
 //! # pub struct Graph {
@@ -135,47 +210,110 @@
 //! # pub struct Edge;
 //! # pub struct Group;
 //! #
-//! pub struct GraphRef<Nodes, Edges, Groups> {
+//! pub struct GraphRef<__Self__, __Tracking__, Nodes, Edges, Groups> {
 //!     pub nodes:  Nodes,
 //!     pub edges:  Edges,
 //!     pub groups: Groups,
+//!     marker:     std::marker::PhantomData<(__Self__, __Tracking__)>,
 //! }
 //!
 //! impl Graph {
 //!     pub fn as_refs_mut(&mut self) ->
-//!         GraphRef<
-//!             &mut Vec<Node>,
-//!             &mut Vec<Edge>,
-//!             &mut Vec<Group>,
-//!         >
+//!        GraphRef<
+//!            Self,
+//!            borrow::True,
+//!            &mut Vec<Node>,
+//!            &mut Vec<Edge>,
+//!            &mut Vec<Group>,
+//!        >
 //!     {
 //!         GraphRef {
 //!             nodes:  &mut self.nodes,
 //!             edges:  &mut self.edges,
-//!             groups: &mut self.groups
+//!             groups: &mut self.groups,
+//!             marker: std::marker::PhantomData,
 //!         }
 //!     }
 //! }
 //! ```
 //!
-//! All partial borrows of the `Graph` struct will be represented as `&mut GraphRef<...>` with type
-//! parameters instantiated to one of `&T`, `&mut T`, or `Hidden<T>`, a marker for fields
-//! inaccessible in the current borrow.
+//! As you see, there are two special phantom parameters: `__Self__` and `__Tracking__`. The former
+//! is always instantiated with the original struct type (in this case, `Graph`) and is used to
+//! track type parameters when working with generic or polymorphic structs. This is especially
+//! useful when defining traits for partially borrowed types.
 //!
-//! <sub></sub>
+//! The latter parameter, `__Tracking__`, controls whether the system should emit diagnostics
+//! related to unused borrowed fields.
 //!
-//! <div class="warning">
+//! In reality, the `GraphRef` struct is slightly more complex to support runtime diagnostics for
+//! unused borrows. These diagnostics introduce a small performance overhead, but only in debug
+//! builds. When compiled in release mode, the structure is optimized to match the simplified
+//! version, and the overhead is completely eliminated. Let’s look at what the actual `GraphRef`
+//! structure looks like:
 //!
-//! Please note the usage of the `#[module(...)]` attribute, which specifies the path to the module
-//! where the macro is invoked. This attribute is necessary because Rust does not allow procedural
-//! macros to automatically detect the path of the module they are used in.
+//! ```
+//! # pub struct Graph {
+//! #     pub nodes: Vec<Node>,
+//! #     pub edges: Vec<Edge>,
+//! #     pub groups: Vec<Group>,
+//! # }
+//! # pub struct Node;
+//! # pub struct Edge;
+//! # pub struct Group;
+//! #
+//! pub struct GraphRef<__Self__, __Tracking__, Nodes, Edges, Groups>
+//! where __Tracking__: borrow::Bool {
+//!     pub nodes:  borrow::Field<__Tracking__, Nodes>,
+//!     pub edges:  borrow::Field<__Tracking__, Edges>,
+//!     pub groups: borrow::Field<__Tracking__, Groups>,
+//!     marker:     std::marker::PhantomData<__Self__>,
+//!     // In release mode this is optimized away.
+//!     usage_tracker: borrow::UsageTracker,
+//! }
 //!
-//! If you intend to use the generated macro from another crate, avoid using the `crate::` prefix
-//! in the `#[module(...)]` attribute. Instead, refer to your current crate by its name, for
-//! example: `#[module(my_crate::data)]` and add `extern crate self as my_crate;` to your `lib.rs`
-//! / `main.rs`.
+//! impl Graph {
+//!     pub fn as_refs_mut(&mut self) ->
+//!        GraphRef<
+//!            Self,
+//!            borrow::True,
+//!            &mut Vec<Node>,
+//!            &mut Vec<Edge>,
+//!            &mut Vec<Group>,
+//!        >
+//!     {
+//!         let usage_tracker = borrow::UsageTracker::new();
+//!         GraphRef {
+//!             // In release mode this is the same as `&mut self.nodes`.
+//!             nodes: borrow::Field::new(
+//!                 "nodes",
+//!                 Some(borrow::Usage::Mut),
+//!                 &mut self.nodes,
+//!                 usage_tracker.clone(),
+//!             ),
+//!             // In release mode this is the same as `&mut self.edges`.
+//!             edges: borrow::Field::new(
+//!                 "edges",
+//!                 Some(borrow::Usage::Mut),
+//!                 &mut self.edges,
+//!                 usage_tracker.clone(),
+//!             ),
+//!             // In release mode this is the same as `&mut self.groups`.
+//!             groups: borrow::Field::new(
+//!                 "groups",
+//!                 Some(borrow::Usage::Mut),
+//!                 &mut self.groups,
+//!                 usage_tracker.clone(),
+//!             ),
+//!             marker: std::marker::PhantomData,
+//!             usage_tracker,
+//!         }
+//!     }
+//! }
+//! ```
 //!
-//! </div>
+//! Note: both the `borrow::UsageTracker` and `borrow::Field` wrappers are fully optimized out in
+//! release builds, ensuring zero runtime overhead. They exist solely to provide enhanced
+//! diagnostics about unused field borrows, as explained later in this documentation.
 //!
 //! <br/>
 //! <br/>
@@ -183,14 +321,15 @@
 //! # 📖 `borrow::partial` (`p!`) macro
 //!
 //! This crate provides the `borrow::partial` macro, which we recommend importing under a shorter
-//! alias `p` for concise syntax. The macro allows you to parameterize borrows similarly to how you
-//! parameterize types. Let's see how the macro expansion works:
+//! alias, `p`, for convenience. The macro can be used both at the type level to specify the type of
+//! partial borrow, and at the value level to create a partial borrow instance. Let's see how the
+//! macro expands. Given the code:
 //!
 //! ```
-//! // Given:
 //! # use std::vec::Vec;
 //! # use borrow::partial as p;
 //! # use borrow::Hidden;
+//! # use borrow::traits::*;
 //! #
 //! # struct Node;
 //! # struct Edge;
@@ -206,31 +345,72 @@
 //! #
 //! # fn main() {}
 //! #
-//! fn test1(graph: p!(&<nodes, mut edges> Graph)) {}
+//! fn test(graph: p!(&<mut *> Graph)) {
+//!     test2(p!(&mut graph));
+//! }
 //!
-//! // It will expand to:
-//! fn test2(graph: &mut p!(<nodes, mut edges> Graph)) {}
+//! fn test2(graph: p!(&<nodes, mut edges> Graph)) {
+//!     // ...
+//! }
+//! ```
 //!
-//! // Which will expand to:
-//! fn test3(
-//!     graph: &mut GraphRef<
+//! It will expand to the following:
+//!
+//! ```
+//! # use std::vec::Vec;
+//! # use borrow::partial as p;
+//! # use borrow::Hidden;
+//! # use borrow::traits::*;
+//! #
+//! # struct Node;
+//! # struct Edge;
+//! # struct Group;
+//! #
+//! # #[derive(borrow::Partial)]
+//! # #[module(crate)]
+//! # struct Graph {
+//! #   pub nodes:  Vec<Node>,
+//! #   pub edges:  Vec<Edge>,
+//! #   pub groups: Vec<Group>,
+//! # }
+//! #
+//! # fn main() {}
+//! #
+//! fn test(graph:
+//!     &mut GraphRef<
+//!         Graph,
+//!         borrow::True,
+//!         &mut Vec<Node>,
+//!         &mut Vec<Edge>,
+//!         &mut Vec<Group>
+//!     >
+//! ) {
+//!     test2(&mut graph.partial_borrow())
+//! }
+//!
+//! fn test2(graph:
+//!     &mut GraphRef<
+//!         Graph,
+//!         borrow::True,
 //!         &Vec<Node>,
 //!         &mut Vec<Edge>,
-//!         Hidden<Vec<Group>>
+//!         Hidden
 //!     >
-//! ) {}
+//! ) {
+//!     // ...
+//! }
 //! ```
 //!
 //! <sub></sub>
 //!
-//! The macro implements the syntax proposed in
-//! [Rust Internals "Notes on partial borrow"](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020),
-//! extended with utilities for increased expressiveness:
+//! More formally, the macro implements syntax as proposed in the
+//! [Rust Internals: Notes on Partial Borrow](https://internals.rust-lang.org/t/notes-on-partial-borrows/20020),
+//! and extends it with utilities for increased flexibility:
 //!
 //! <sub></sub>
 //!
-//! 1. **Field References**
-//!    You can parameterize a reference by providing field names this reference should contain.
+//! 1. **Field References**<br/>
+//!    You can specify which fields to borrow by naming them explicitly.
 //!
 //!    ```
 //!    # use std::vec::Vec;
@@ -259,9 +439,8 @@
 //!
 //!    <sub></sub>
 //!
-//! 2. **Field Selectors**
-//!    You can use `*` to include all fields and `!` to exclude fields. Later selectors override
-//!    previous ones.
+//! 2. **Field Selectors**<br/>
+//!    Use `*` to include all fields. Later selectors override earlier ones.
 //!
 //!    ```
 //!    # use std::vec::Vec;
@@ -283,16 +462,16 @@
 //!    # fn main() {}
 //!    #
 //!    // Contains:
-//!    // 1. Mutable references to all, but 'edges' and 'groups' fields.
+//!    // 1. Mutable references to all, but the 'edges' field.
 //!    // 2. Immutable reference to the 'edges' field.
-//!    fn test(graph: p!(&<mut *, edges, !groups> Graph)) { /* ... */ }
+//!    fn test(graph: p!(&<mut *, edges> Graph)) { /* ... */ }
 //!    ```
 //!
 //!    <sub></sub>
 //!
-//! 3. **Lifetime Annotations**
-//!    You can specify lifetimes for each reference. If a lifetime is not provided, it defaults to
-//!    `'_`. You can override the default lifetime (`'_`) by providing it as the first argument.
+//! 3. **Lifetime Annotations**<br/>
+//!    You can attach lifetimes to each reference. If not specified, `'_` is used by default. You can
+//!    override the default by attaching lifetimes after the `&`.
 //!
 //!    ```
 //!    # use std::vec::Vec;
@@ -314,36 +493,30 @@
 //!    # fn main() {}
 //!    #
 //!    // Contains:
-//!    // 1. References with the 'b lifetime to all but the 'mesh' fields.
-//!    // 2. Reference with the 'c lifetime to the 'edges' field.
-//!    //
-//!    // Due to explicit partial reference lifetime 'a, the inferred
-//!    // lifetime dependencies are 'a:'b and 'a:'c.
-//!    fn test<'a, 'b, 'c>(graph: p!(&'a <'b *, 'c edges>Graph)) { /* ... */ }
+//!    // 1. References with the 'a lifetime to all but the 'mesh' fields.
+//!    // 2. Reference with the 'b lifetime to the 'edges' field.
+//!    fn test<'a, 'b>(graph: p!(&<'a *, 'b edges>Graph)) { /* ... */ }
 //!
 //!    // Contains:
 //!    // 1. Reference with the 't lifetime to the 'nodes' field.
 //!    // 2. Reference with the 't lifetime to the 'edges' field.
 //!    // 3. Reference with the 'm lifetime to the 'groups' field.
-//!    type PathFind<'t, 'm> = p!(<'t, nodes, edges, 'm groups> Graph);
+//!    type PathFind<'t, 'm> = p!(&'t<nodes, edges, 'm groups> Graph);
 //!    ```
 //!
-//! <br/>
-//! <br/>
+//! 4. **Owned Borrows**<br/>
+//!    You can omit the `&` to create an owned partial borrow. For example:
 //!
-//! # 📖 The `partial_borrow`, `split`, and `extract_$field` methods.
+//!    - `p!(&<mut *> Graph)` expands to `&mut GraphRef<...>`.
+//!    - `p!(<mut *> Graph)` expands to `GraphRef<...>`.
 //!
-//! The `borrow::Partial` derive macro also generates the `partial_borrow`, `split`, and an
-//! extraction method per struct field. These methods let you transform one partial borrow
-//! into another:
+//!    This is especially useful when defining methods or implementing traits for partial borrows,
+//!    as traits can't be implemented for reference types directly in many cases.
 //!
-//! <sub></sub>
-//!
-//! - `partial_borrow` lets you borrow only the fields required by the target type.
 //!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
-//!    # use borrow::traits::*;
+//!    # use borrow::Hidden;
 //!    #
 //!    # struct Node;
 //!    # struct Edge;
@@ -359,14 +532,80 @@
 //!    #
 //!    # fn main() {}
 //!    #
-//!    fn test(graph: p!(&<mut *> Graph)) {
-//!        let graph2 = graph.partial_borrow::<p!(<mut nodes> Graph)>();
+//!    /// Methods defined on a partially borrowed struct.
+//!    impl p!(<mut edges, mut nodes> Graph) {
+//!        fn detach_all_nodes(&mut self) {
+//!            // ...
+//!        }
 //!    }
+//!    ```
+//!
+//! <br/>
+//! <br/>
+//!
+//! # 📖 The `partial_borrow`, `split`, and `borrow_$field` methods.
+//!
+//! Partially borrowed structs expose a set of methods that allow transforming one partial borrow
+//! into another. The `p!` macro can also be used as shorthand for the `partial_borrow` method.
+//!
+//! <sub></sub>
+//!
+//! - `fn partial_borrow<'s, Target>(&'s mut self) -> Target where Self: Partial<'s, Target>`<br/>
+//!    Allows borrowing only the fields specified by the target type. You don’t need to call
+//!   `as_refs_mut` explicitly, `partial_borrow` handles it internally.
+//!
+//!    ```
+//!    # use std::vec::Vec;
+//!    # use borrow::partial as p;
+//!    # use borrow::traits::*;
+//!    #
+//!    # struct Node;
+//!    # struct Edge;
+//!    # struct Group;
+//!    #
+//!    # #[derive(borrow::Partial, Default)]
+//!    # #[module(crate)]
+//!    # struct Graph {
+//!    #   pub nodes:  Vec<Node>,
+//!    #   pub edges:  Vec<Edge>,
+//!    #   pub groups: Vec<Group>,
+//!    # }
+//!    #
+//!    fn main() {
+//!        let mut graph = Graph::default();
+//!        // Creating a partial borrow (recommended way):
+//!        test(p!(&mut graph));
+//!
+//!        // Which expands to:
+//!        test(&mut graph.partial_borrow());
+//!
+//!        // Which expands to:
+//!        test(&mut graph.as_refs_mut().partial_borrow());
+//!    }
+//!
+//!    fn test(mut graph: p!(&<mut *> Graph)) {
+//!        // Creating a partial borrow of the current borrow (recommended way):
+//!        test2(p!(&mut graph));
+//!
+//!        // The above is the same as the following:
+//!        test2(&mut graph.partial_borrow());
+//!
+//!        // Which is the same as the most explicit version:
+//!        let graph2 = &mut graph.partial_borrow::<p!(<mut nodes> Graph)>();
+//!        test2(graph2);
+//!    }
+//!
+//!    fn test2(graph: p!(&<mut nodes> Graph)) {
+//!        // ...
+//!        # let _ = graph;
+//!    }
+//!
 //!    ```
 //!
 //!    <sub></sub>
 //!
-//! - `split` is like `partial_borrow` but also returns a borrow of the remaining fields.
+//! - `fn split<'s, Target>(&'s mut self) -> (Target, Self::Rest) where Self: Partial<'s, Target>`<br/>
+//!    Similar to `partial_borrow`, but also returns a borrow of the remaining fields.
 //!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
@@ -386,16 +625,15 @@
 //!    #
 //!    # fn main() {}
 //!    #
-//!    fn test(graph: p!(&<mut *> Graph)) {
-//!        // The inferred type of `graph3` is `p!(&<mut *, !nodes> Graph)`,
-//!        // which expands to `p!(&<mut edges, mut groups> Graph)`
+//!    fn test(mut graph: p!(&<mut *> Graph)) {
+//!        // The inferred type of `graph3` is `p!(&<mut edges, mut groups> Graph)`.
 //!        let (graph2, graph3) = graph.split::<p!(<mut nodes> Graph)>();
 //!    }
 //!    ```
 //!
 //!    <sub></sub>
 //!
-//! - `extract_$field` is like split, but for single field only.
+//! - `borrow_$field` and `borrow_$field_mut` are like split, but for single field only.
 //!    ```
 //!    # use std::vec::Vec;
 //!    # use borrow::partial as p;
@@ -414,17 +652,23 @@
 //!    #
 //!    # fn main() {}
 //!    #
-//!    fn test(graph: p!(&<mut *> Graph)) {
-//!        // The inferred type of `nodes` is `p!(&<mut nodes> Graph)`.
-//!        // The inferred type of `graph2` is `p!(&<mut *, !nodes> Graph)`.
-//!        let (nodes, graph2) = graph.extract_nodes();
+//!    fn test(mut graph: p!(&<mut *> Graph)) {
+//!        // Type of `nodes` is `&mut Vec<Node>`.
+//!        // Type of `graph2` is `p!(&<mut edges, mut groups> Graph)`.
+//!        let (nodes, graph2) = graph.borrow_nodes_mut();
+//!
+//!        // ...
+//!
+//!        // Type of `edges` is `&Vec<Edge>`.
+//!        // Type of `graph2` is `p!(&<mut nodes, edges, mut groups> Graph)`.
+//!        let (edges, graph3) = graph.borrow_edges();
 //!    }
 //!    ```
 //!
 //! <sub></sub>
 //!
-//! The following example demonstrates usage of these functions. Read the comments in the code to
-//! learn more. You can also find this example in the `tests` directory.
+//! The following example demonstrates how to use these functions in practice. Refer to comments
+//! in the source for additional context. This example is also available in the `tests` directory.
 //!
 //! <details>
 //! <summary>⚠️ Some code was collapsed for brevity, click to expand.</summary>
@@ -458,7 +702,7 @@
 //!     nodes: Vec<NodeId>,
 //! }
 //! ```
-//!
+//! <br/>
 //! </details>
 //!
 //! ```
@@ -507,7 +751,7 @@
 //! // =============
 //!
 //! // Requires mutable access to the `graph.edges` field.
-//! fn detach_node(graph: p!(&<mut edges> Graph), node: &mut Node) {
+//! fn detach_node(mut graph: p!(&<mut edges> Graph), node: &mut Node) {
 //!     for edge_id in std::mem::take(&mut node.outputs) {
 //!         graph.edges[edge_id].from = None;
 //!     }
@@ -517,12 +761,12 @@
 //! }
 //!
 //! // Requires mutable access to all `graph` fields.
-//! fn detach_all_nodes(graph: p!(&<mut *> Graph)) {
-//!     // Extract the `nodes` field.
-//!     // The `graph2` variable has a type of `p!(&<mut *, !nodes> Graph)`.
-//!     let (nodes, graph2) = graph.extract_nodes();
+//! fn detach_all_nodes(mut graph: p!(&<mut *> Graph)) {
+//!     // Borrow the `nodes` field.
+//!     // The `graph2` has a type of `p!(&<mut edges, mut groups> Graph)`.
+//!     let (nodes, mut graph2) = graph.borrow_nodes_mut();
 //!     for node in nodes {
-//!         detach_node(graph2.partial_borrow(), node);
+//!         detach_node(p!(&mut graph2), node);
 //!     }
 //! }
 //!
@@ -547,7 +791,7 @@
 //!         groups: vec![]
 //!     };
 //!
-//!     detach_all_nodes(&mut graph.as_refs_mut());
+//!     detach_all_nodes(p!(&mut graph));
 //!
 //!     for node in &graph.nodes {
 //!         assert!(node.outputs.is_empty());
@@ -565,7 +809,8 @@
 //!
 //! # Partial borrows of self in methods
 //!
-//! The above example can be rewritten to use partial borrows of `self` in methods.
+//! The example above can be rewritten to use partial borrows directly on `self` in method
+//! implementations.
 //!
 //!
 //! <details>
@@ -614,7 +859,7 @@
 //! #
 //! # fn main() {}
 //! ```
-//!
+//! <br/>
 //! </details>
 //!
 //! ```
@@ -662,7 +907,7 @@
 //! #
 //! impl p!(<mut edges, mut nodes> Graph) {
 //!     fn detach_all_nodes(&mut self) {
-//!         let (nodes, self2) = self.extract_nodes();
+//!         let (nodes, mut self2) = self.borrow_nodes_mut();
 //!         for node in nodes {
 //!             self2.detach_node(node);
 //!         }
@@ -728,7 +973,7 @@
 //! #
 //! # impl p!(<mut edges, mut nodes> Graph) {
 //! #     fn detach_all_nodes(&mut self) {
-//! #         let (nodes, self2) = self.extract_nodes();
+//! #         let (nodes, mut self2) = self.borrow_nodes_mut();
 //! #         for node in nodes {
 //! #             self2.detach_node(node);
 //! #         }
@@ -767,7 +1012,7 @@
 //!       groups: vec![],
 //!    };
 //!
-//!    graph.as_refs_mut().partial_borrow().detach_all_nodes();
+//!    p!(&mut graph).detach_all_nodes();
 //!
 //!    for node in &graph.nodes {
 //!       assert!(node.outputs.is_empty());
@@ -779,7 +1024,7 @@
 //!    }
 //! }
 //! ```
-//!
+//! <br/>
 //! </details>
 //!
 //! Please note, that you do not need to provide the partially borrowed type explicitly, it will be
@@ -804,469 +1049,819 @@
 //! #
 //! fn main() {
 //!    let mut graph: Graph = Graph::default();
-//!    let mut graph_ref: p!(<mut *>Graph) = graph.as_refs_mut();
-//!    graph_ref.partial_borrow().detach_all_nodes();
+//!    p!(&mut graph).detach_all_nodes();
 //! }
 //! ```
 //!
 //! <br/>
 //! <br/>
 //!
-//! # Why identity partial borrow is disallowed?
-//! Please note, that the `partial_borrow` method does not allow you to request the same fields as
-//! the original borrow. This is to enforce the code to be explicit and easy to understand:
+//! # Unused borrows tracking
 //!
-//! <sub></sub>
+//! This crate makes it easy to keep track of which fields are actually used, which is helpful
+//! when refactoring or trying to minimize the set of required borrows.
 //!
-//! 1. Whenever you see the call to `partial_borrow`, you can be sure that target borrow uses
-//!    subset of fields from the original borrow:
-//!    ```compile_fail
-//!    # use std::vec::Vec;
-//!    # use borrow::partial as p;
-//!    # use borrow::traits::*;
-//!    #
-//!    #    #[derive(Default, borrow::Partial)]
-//!    #    #[module(crate)]
-//!    # struct Graph {
-//!    #     nodes: Vec<usize>,
-//!    #     edges: Vec<usize>,
-//!    # }
-//!    #
-//!    # impl p!(<mut nodes> Graph) {
-//!    #     fn detach_all_nodes(&mut self) {}
-//!    # }
-//!    #
-//!    # fn main() {}
-//!    #
-//!    fn run(graph: p!(&<mut nodes, mut edges> Graph)) {
-//!        // ERROR: Cannot partially borrow the same fields as the original borrow.
-//!        // Instead, you should pass `graph` directly as `test(graph)`.
-//!        test(graph.partial_borrow())
-//!    }
+//! Unlike standard Rust or Clippy lints, diagnostics for unused borrows are performed **at runtime**,
+//! and they **incur overhead in debug builds**. The diagnostics can be disabled or optimized away
+//! entirely using the following mechanisms:
 //!
-//!    fn test(graph: p!(&<mut nodes, mut edges> Graph)) { /* ... */ }
-//!    ```
+//! - Enabled by default in debug builds.
+//! - Disabled in release builds.
+//! - Can be turned off explicitly with the `no_usage_tracking` feature.
+//! - Can be forced on in release with the `usage_tracking` feature.
 //!
-//! <sub></sub>
+//! Consider the following code:
 //!
-//! 2. If you refactor your code and the new version does not require all field references it used
-//!    to require, you will get compilation errors in all usage places that were assuming the full
-//!    usage. This allows you to easily review the places that either need to introduce a new
-//!    partial borrow or need to update their type signatures:
-//!    ```
-//!    # use std::vec::Vec;
-//!    # use borrow::partial as p;
-//!    # use borrow::traits::*;
-//!    #
-//!    #    #[derive(Default, borrow::Partial)]
-//!    #    #[module(crate)]
-//!    # struct Graph {
-//!    #     nodes: Vec<usize>,
-//!    #     edges: Vec<usize>,
-//!    # }
-//!    #
-//!    # impl p!(<mut nodes> Graph) {
-//!    #     fn detach_all_nodes(&mut self) {}
-//!    # }
-//!    #
-//!    # fn main() {}
-//!    #
-//!    fn run(graph: p!(&<mut nodes, mut edges> Graph)) {
-//!        test(graph)
-//!    }
+//! ```
+//! # use std::vec::Vec;
+//! # use borrow::partial as p;
+//! # use borrow::traits::*;
+//! struct Node;
+//! struct Edge;
+//! struct Group;
 //!
-//!    // Changing this signature to `test(graph: p!(&<mut nodes> Graph))` would
-//!    // cause a compilation error in the `main` function, as the required borrow
-//!    // is smaller than the one provided. There are two possible solutions:
-//!    // 1. Change the call site to `test(graph.partial_borrow())`.
-//!    // 2. Change the `main` function signature to reflect the new requirements:
-//!    //    `main(graph: p!(&<mut nodes> Graph))`.
-//!    fn test(graph: p!(&<mut nodes, mut edges> Graph)) { /* ... */ }
-//!    ```
+//! #[derive(borrow::Partial, Default)]
+//! #[module(crate)]
+//! struct Graph {
+//!     pub nodes:  Vec<Node>,
+//!     pub edges:  Vec<Edge>,
+//!     pub groups: Vec<Group>,
+//! }
 //!
-//! <sub></sub>
+//! fn main() {
+//!     let mut graph = Graph::default();
+//!     pass1(p!(&mut graph));
+//! }
 //!
-//! 3. In case you want to opt-out from this check, there is also a `partial_borrow_or_eq`
-//!    method that does not perform this compile-time check. However, we recommend using it only in
-//!    exceptional cases, as it may lead to confusion and harder-to-maintain code.
+//! fn pass1(mut graph: p!(&<mut *> Graph)) {
+//!     pass2(p!(&mut graph));
+//! }
 //!
-//!    ```
-//!    # use std::vec::Vec;
-//!    # use borrow::partial as p;
-//!    # use borrow::traits::*;
-//!    #
-//!    #    #[derive(Default, borrow::Partial)]
-//!    #    #[module(crate)]
-//!    # struct Graph {
-//!    #     nodes: Vec<usize>,
-//!    #     edges: Vec<usize>,
-//!    # }
-//!    #
-//!    # impl p!(<mut nodes> Graph) {
-//!    #     fn detach_all_nodes(&mut self) {}
-//!    # }
-//!    #
-//!    # fn main() {}
-//!    #
-//!    fn run(graph: p!(&<mut nodes, mut edges> Graph)) {
-//!        test(graph.partial_borrow_or_eq())
-//!    }
+//! fn pass2(mut graph: p!(&<mut nodes, edges> Graph)) {
+//!     let _ = &*graph.nodes;
+//! }
+//! ```
 //!
-//!    fn test(graph: p!(&<mut nodes, mut edges> Graph)) { /* ... */ }
-//!    ```
+//! When running it, you'll see the following output in stderr:
+//!
+//! ```text
+//! Warning [lib/src/lib.rs:19]:
+//!     Borrowed but not used: edges.
+//!     Borrowed as mut but used as ref: nodes.
+//!     To fix the issue, use: &<nodes>.
+//!
+//! Warning [lib/src/lib.rs:15]:
+//!     Borrowed but not used: groups.
+//!     To fix the issue, use: &<mut edges, mut nodes>.
+//! ```
+//!
+//! After fixing, it becomes:
+//!
+//! ```
+//! # use std::vec::Vec;
+//! # use borrow::partial as p;
+//! # use borrow::traits::*;
+//! struct Node;
+//! struct Edge;
+//! struct Group;
+//!
+//! #[derive(borrow::Partial, Default)]
+//! #[module(crate)]
+//! struct Graph {
+//!     pub nodes:  Vec<Node>,
+//!     pub edges:  Vec<Edge>,
+//!     pub groups: Vec<Group>,
+//! }
+//!
+//! fn main() {
+//!     let mut graph = Graph::default();
+//!     pass1(p!(&mut graph));
+//! }
+//!
+//! fn pass1(mut graph: p!(&<mut edges, nodes> Graph)) {
+//!     // Simulate mut usage of edges.
+//!     let _ = &mut *graph.edges;
+//!     pass2(p!(&mut graph));
+//! }
+//!
+//! fn pass2(mut graph: p!(&<nodes> Graph)) {
+//!     // Simulate ref usage of nodes.
+//!     let _ = &*graph.nodes;
+//! }
+//! ```
+//!
+//! ### Special Case 1: Trait Interface
+//!
+//! When passing a partial borrow into a trait method you consider an interface, you might not want
+//! the diagnostics to complain about unused fields. You can prefix the `&` with `_` to silence tracking:
+//!
+//!
+//! ```
+//! # use std::vec::Vec;
+//! # use borrow::partial as p;
+//! # use borrow::traits::*;
+//! struct Node;
+//! struct Edge;
+//! struct Group;
+//!
+//! #[derive(borrow::Partial, Default)]
+//! #[module(crate)]
+//! struct Graph {
+//!     pub nodes:  Vec<Node>,
+//!     pub edges:  Vec<Edge>,
+//!     pub groups: Vec<Group>,
+//! }
+//!
+//! trait RenderPass {
+//!     fn run_pass(graph: p!(_&<mut *> Graph));
+//! }
+//!
+//! struct MyRenderPass;
+//! impl RenderPass for MyRenderPass {
+//!     fn run_pass(graph: p!(_&<mut *> Graph)) {
+//!         // Simulate mut usage of edges.
+//!         let _ = &mut *graph.edges;
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let mut graph = Graph::default();
+//!     // No warnings here.
+//!     MyRenderPass::run_pass(p!(&mut graph));
+//! }
+//! ```
+//!
+//! ### Special Case 2: Conditional Use
+//!
+//! If your function uses a borrow only under certain conditions, you can silence the warnings
+//! by manually marking all fields as used:
+//!
+//! ```
+//! # use std::vec::Vec;
+//! # use borrow::partial as p;
+//! # use borrow::traits::*;
+//! struct Node;
+//! struct Edge;
+//! struct Group;
+//!
+//! #[derive(borrow::Partial, Default)]
+//! #[module(crate)]
+//! struct Graph {
+//!     pub nodes:  Vec<Node>,
+//!     pub edges:  Vec<Edge>,
+//!     pub groups: Vec<Group>,
+//! }
+//!
+//! fn main() {
+//!     let mut graph = Graph::default();
+//!     pass1(true, p!(&mut graph));
+//!     pass1(false, p!(&mut graph));
+//! }
+//!
+//! fn pass1(run2: bool, mut graph: p!(&<mut edges, nodes> Graph)) {
+//!     // Simulate mut usage of edges.
+//!     let _ = &mut *graph.edges;
+//!     if run2 {
+//!         pass2(p!(&mut graph));
+//!     } else {
+//!         // Disable field usage tracking for this condition.
+//!         graph.mark_all_fields_as_used();
+//!     }
+//! }
+//!
+//! fn pass2(mut graph: p!(&<nodes> Graph)) {
+//!     // Simulate ref usage of nodes.
+//!     let _ = &*graph.nodes;
+//! }
+//! ```
+//!
+//! If the struct isn’t used at all, Clippy will still warn you about the unused variable, but
+//! partial borrow diagnostics will be suppressed.
 //!
 //! <br/>
 //! <br/>
+
+#![cfg_attr(not(usage_tracking_enabled), allow(unused_imports))]
+#![cfg_attr(not(usage_tracking_enabled), allow(dead_code))]
+
+extern crate self as borrow;
 
 pub mod doc;
 pub mod hlist;
 pub mod reflect;
 
-use hlist::Cons;
-use hlist::Nil;
-use std::fmt::Debug;
+#[cfg(usage_tracking_enabled)]
+mod usage_tracker;
+#[cfg(usage_tracking_enabled)]
+pub use usage_tracker::*;
+
+#[cfg(not(usage_tracking_enabled))]
+mod usage_tracker_mock;
+#[cfg(not(usage_tracking_enabled))]
+pub use usage_tracker_mock::*;
 
 pub use reflect::*;
 pub use borrow_macro::*;
 
+#[doc(hidden)]
+pub use tstr::TS as Str;
+
+pub use hlist::*;
+
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 // ==============
 // === Traits ===
 // ==============
 
 pub mod traits {
-    pub use super::Acquire as _;
     pub use super::Partial as _;
     pub use super::PartialHelper as _;
-    pub use super::RefCast as _;
-    pub use super::AsRefs as _;
-    pub use super::AsRefsHelper as _;
+    pub use super::SplitHelper as _;
+    pub use super::AsRefsMut as _;
+    pub use super::HasUsageTrackedFields as _;
 }
 
+// =============
+// === Utils ===
+// =============
 
-// ==============
-// === AsRefs ===
-// ==============
-
-/// Borrow all fields of a struct and output a partially borrowed struct, like
-/// `p!(<mut field1, field2>MyStruct)`.
-pub trait AsRefs<'t, T> {
-    fn as_refs_impl(&'t mut self) -> T;
+#[inline(always)]
+fn default<T: Default>() -> T {
+    T::default()
 }
 
-impl<T> AsRefsHelper<'_> for T {}
-pub trait AsRefsHelper<'t> {
-    /// Borrow all fields of a struct and output a partially borrowed struct, like
-    /// `p!(<mut field1, field2>MyStruct)`.
-    #[inline(always)]
-    fn as_refs<T>(&'t mut self) -> T
-    where Self: AsRefs<'t, T> { self.as_refs_impl() }
+// ============
+// === Bool ===
+// ============
+
+pub trait Bool {
+    fn bool() -> bool;
 }
 
+pub struct True;
+pub struct False;
 
-// =========================
-// === No Access Wrapper ===
-// =========================
+impl Bool for True {
+    fn bool() -> bool {
+        true
+    }
+}
 
-/// A phantom type used to mark fields as hidden in the partially borrowed structs.
-#[repr(transparent)]
+impl Bool for False {
+    fn bool() -> bool {
+        false
+    }
+}
+
+// =============
+// === Label ===
+// =============
+
+#[doc(hidden)]
+pub type Label = &'static str;
+
+// =============
+// === Usage ===
+// =============
+
+#[doc(hidden)]
+pub type OptUsage = Option<Usage>;
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialOrd, PartialEq, Ord)]
+pub enum Usage { Ref, Mut }
+
+// =============================
+// === HasUsageTrackedFields ===
+// =============================
+
+pub trait HasUsageTrackedFields {
+    fn disable_field_usage_tracking(&self);
+    /// Mark all borrowed fields as used. Use this to silence warnings about unused borrows. This
+    /// can be handy when you pass a partial borrow to a trait method, which can be considered an
+    /// interface which does not have to use all the given fields.
+    fn mark_all_fields_as_used(&self);
+}
+
+// =============
+// === Field ===
+// =============
+
+/// Field that tracks usage of its value. The `Enabled` type parameter is used to determine whether
+/// the tracking is enabled.
+#[doc(hidden)]
 #[derive(Debug)]
-pub struct Hidden<T>(*mut T);
-
-impl<T> Copy for Hidden<T> {}
-impl<T> Clone for Hidden<T> {
-    fn clone(&self) -> Self { *self }
+#[cfg_attr(not(usage_tracking_enabled), repr(transparent))]
+pub struct Field<Enabled: Bool, V> {
+    pub value_no_usage_tracking: V,
+    #[cfg(usage_tracking_enabled)]
+    tracker: FieldUsageTracker<Enabled>,
+    type_marker: PhantomData<Enabled>,
 }
 
-
-// ===============
-// === RefCast ===
-// ===============
-
-pub trait RefCast<'t, T> {
-    /// All possible casts of a mutable reference: `&mut T` (identity), `&T`, and `Hidden<T>`.
-    fn ref_cast(&'t mut self) -> T;
-}
-
-impl<'t, T> RefCast<'t, &'t T> for T {
+impl<E: Bool, V> Field<E, V> {
     #[inline(always)]
-    fn ref_cast(&'t mut self) -> &'t T { self }
-}
+    #[cfg(usage_tracking_enabled)]
+    pub fn new(label: Label, requested_usage: OptUsage, value: V, tracker: UsageTracker) -> Self {
+        let usage_tracker = FieldUsageTracker::new(label, requested_usage, tracker);
+        Self::cons(value, usage_tracker)
+    }
 
-impl<'t, T> RefCast<'t, &'t mut T> for T {
     #[inline(always)]
-    fn ref_cast(&'t mut self) -> &'t mut T { self }
-}
+    #[cfg(not(usage_tracking_enabled))]
+    pub fn new(_label: Label, _req_usage: OptUsage, value: V, _tracker: UsageTracker) -> Self {
+        Self::cons(value)
+    }
 
-impl<'t, T> RefCast<'t, Hidden<T>> for T {
     #[inline(always)]
-    fn ref_cast(&'t mut self) -> Hidden<T> { Hidden(self) }
+    #[cfg(usage_tracking_enabled)]
+    fn cons(value_no_usage_tracking: V, tracker: FieldUsageTracker<E>) -> Self {
+        let type_marker = PhantomData;
+        Self { value_no_usage_tracking, tracker, type_marker }
+    }
+
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn cons(value_no_usage_tracking: V) -> Self {
+        let type_marker = PhantomData;
+        Self { value_no_usage_tracking, type_marker }
+    }
+
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn clone_as_hidden<E2: Bool>(&self) -> Field<E2, Hidden> {
+        Field::cons(Hidden, self.tracker.clone_disabled())
+    }
+
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn clone_as_hidden<E2: Bool>(&self) -> Field<E2, Hidden> {
+        Field::cons(Hidden)
+    }
+
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    pub fn disable_usage_tracking(&self) {
+        self.tracker.disable();
+    }
+
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    pub fn disable_usage_tracking(&self) {}
+
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    pub fn mark_as_used(&self) {
+        self.tracker.register_usage(Some(Usage::Mut));
+    }
+
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    pub fn mark_as_used(&self) {}
 }
 
+impl<E: Bool, T> Deref for Field<E, T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        #[cfg(usage_tracking_enabled)]
+        self.tracker.register_usage(Some(Usage::Ref));
+        &self.value_no_usage_tracking
+    }
+}
+
+impl<E: Bool, T> DerefMut for Field<E, T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        #[cfg(usage_tracking_enabled)]
+        self.tracker.register_usage(Some(Usage::Mut));
+        &mut self.value_no_usage_tracking
+    }
+}
+
+impl<'t, E: Bool, T> IntoIterator for Field<E, &'t T>
+where &'t T: IntoIterator {
+    type Item = <&'t T as IntoIterator>::Item;
+    type IntoIter = <&'t T as IntoIterator>::IntoIter;
+    #[inline(always)]
+    fn into_iter(self) -> Self::IntoIter {
+        #[cfg(usage_tracking_enabled)]
+        self.tracker.register_usage(Some(Usage::Ref));
+        self.value_no_usage_tracking.into_iter()
+    }
+}
+
+impl<'t, E: Bool, T> IntoIterator for Field<E, &'t mut T>
+where &'t mut T: IntoIterator {
+    type Item = <&'t mut T as IntoIterator>::Item;
+    type IntoIter = <&'t mut T as IntoIterator>::IntoIter;
+    #[inline(always)]
+    fn into_iter(self) -> Self::IntoIter {
+        #[cfg(usage_tracking_enabled)]
+        self.tracker.register_usage(Some(Usage::Mut));
+        self.value_no_usage_tracking.into_iter()
+    }
+}
+
+// ================
+// === CloneRef ===
+// ================
+
+#[doc(hidden)]
+pub trait CloneRef<'s> {
+    type Cloned;
+    fn clone_ref_disabled_usage_tracking(&'s mut self) -> Self::Cloned;
+}
+
+#[doc(hidden)]
+pub type ClonedRef<'s, T> = <T as CloneRef<'s>>::Cloned;
 
 // ==================
-// === RefFlatten ===
+// === CloneField ===
 // ==================
 
-/// Flattens `&mut &mut T` into `&mut T` and `&mut &T` into `&T`.
-pub trait RefFlatten<'t> {
+#[doc(hidden)]
+pub trait CloneField<'s, E: Bool> {
+    type Cloned;
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned>;
+}
+
+#[doc(hidden)]
+pub type ClonedField<'s, T, E> = <T as CloneField<'s, E>>::Cloned;
+
+impl<'s, E: Bool> CloneField<'s, E> for Field<E, Hidden> {
+    type Cloned = Hidden;
+    #[cfg(usage_tracking_enabled)]
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
+        let usage_tracker = self.tracker.clone_disabled();
+        Field::cons(self.value_no_usage_tracking, usage_tracker)
+    }
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
+        Field::cons(self.value_no_usage_tracking)
+    }
+}
+
+impl<'s, 't, E: Bool, T> CloneField<'s, E> for Field<E, &'t T> {
+    type Cloned = &'t T;
+    #[cfg(usage_tracking_enabled)]
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
+        let usage_tracker = self.tracker.clone_disabled();
+        Field::cons(self.value_no_usage_tracking, usage_tracker)
+    }
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
+        Field::cons(self.value_no_usage_tracking)
+    }
+}
+
+impl<'s, E: Bool, T: 's> CloneField<'s, E> for Field<E, &mut T> {
+    type Cloned = &'s mut T;
+    #[cfg(usage_tracking_enabled)]
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
+        let usage_tracker = self.tracker.clone_disabled();
+        Field::cons(self.value_no_usage_tracking, usage_tracker)
+    }
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn clone_field_disabled_usage_tracking(&'s mut self) -> Field<E, Self::Cloned> {
+        Field::cons(self.value_no_usage_tracking)
+    }
+}
+
+// ====================
+// === HasFieldsExt ===
+// ====================
+
+#[doc(hidden)]
+pub trait HasFieldsExt: HasFields {
+    type FieldsAsHidden;
+    type FieldsAsRef<'t> where Self: 't;
+    type FieldsAsMut<'t> where Self: 't;
+}
+
+#[doc(hidden)]
+pub type FieldsAsHidden<T> = <T as HasFieldsExt>::FieldsAsHidden;
+#[doc(hidden)]
+pub type FieldsAsRef<'t, T> = <T as HasFieldsExt>::FieldsAsRef<'t>;
+#[doc(hidden)]
+pub type FieldsAsMut<'t, T> = <T as HasFieldsExt>::FieldsAsMut<'t>;
+
+// =======================
+// === AsRefWithFields ===
+// =======================
+
+#[doc(hidden)]
+pub trait AsRefWithFields<F> {
     type Output;
-    fn ref_flatten(&'t mut self) -> Self::Output;
 }
 
-impl<'t, T: 't> RefFlatten<'t> for &'_ mut T {
-    type Output = &'t mut T;
-    fn ref_flatten(&'t mut self) -> Self::Output {
-        *self
-    }
-}
+#[doc(hidden)]
+pub type RefWithFields<T, F> = <T as AsRefWithFields<F>>::Output;
 
-impl<'t, T: 't> RefFlatten<'t> for &'_ T {
-    type Output = &'t T;
-    fn ref_flatten(&'t mut self) -> Self::Output {
-        *self
-    }
-}
+// ==============
+// === Hidden ===
+// ==============
 
-pub type RefFlattened<'t, T> = <T as RefFlatten<'t>>::Output;
-
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone)]
+pub struct Hidden;
 
 // ===============
 // === Acquire ===
 // ===============
 
-/// This is a documentation for type-level field borrowing transformation. It involves checking if a
-/// field of a partially borrowed struct can be borrowed in a specific form and provides the remaining
-/// fields post-borrow.
-pub trait           Acquire<Target>                  { type Rest; }
-impl<T, S>          Acquire<Hidden<T>> for S         { type Rest = S; }
-impl<'t: 's, 's, T> Acquire<&'s mut T> for &'t mut T { type Rest = Hidden<T>; }
-impl<'t: 's, 's, T> Acquire<&'s     T> for &'t mut T { type Rest = &'t T; }
-impl<'t: 's, 's, T> Acquire<&'s     T> for &'t     T { type Rest = &'t T; }
+#[doc(hidden)]
+pub struct AcquireMarker;
 
-/// Remaining fields after borrowing a specific field. See the documentation of [`Acquire`] to learn more.
-pub type Acquired<This, Target> = <This as Acquire<Target>>::Rest;
-
-
-// ===================
-// === SplitFields ===
-// ===================
-
-/// Split `HList` of borrows into target `HList` of borrows and a `HList` of remaining borrows
-/// after acquiring the target. See the documentation of [`Acquire`] for more information.
-///
-/// This trait is automatically implemented for all types.
-pub trait          SplitFields<Target>               { type Rest; }
-impl               SplitFields<Nil>          for Nil { type Rest = Nil; }
-impl<H, H2, T, T2> SplitFields<Cons<H2, T2>> for Cons<H, T> where
-T: SplitFields<T2>, H: Acquire<H2> {
-    type Rest = Cons<Acquired<H, H2>, <T as SplitFields<T2>>::Rest>;
+#[doc(hidden)]
+pub trait Acquire<This, Target> {
+    type Rest;
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, This>,
+        tracker: UsageTracker
+    ) -> (Field<E2, Target>, Field<E1, Self::Rest>);
 }
 
-type SplitFieldsRest<T, Target> = <T as SplitFields<Target>>::Rest;
+impl<'t, T> Acquire<&'t mut T, Hidden> for AcquireMarker {
+    type Rest = &'t mut T;
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled());
+        (target, rest)
+    }
 
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
+    }
+}
+
+impl<'t, T> Acquire<&'t T, Hidden> for AcquireMarker {
+    type Rest = &'t T;
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t T>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled());
+        (target, rest)
+    }
+
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t T>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
+    }
+}
+
+impl Acquire<Hidden, Hidden> for AcquireMarker {
+    type Rest = Hidden;
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, Hidden>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled());
+        (target, rest)
+    }
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, Hidden>,
+        _: UsageTracker
+    ) -> (Field<E2, Hidden>, Field<E1, Self::Rest>) {
+        let target = this.clone_as_hidden();
+        let rest = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
+    }
+}
+
+impl<'t, 'y, T> Acquire<&'t mut T, &'y mut T> for AcquireMarker
+where 't: 'y {
+    type Rest = Hidden;
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        tracker: UsageTracker
+    ) -> (Field<E2, &'y mut T>, Field<E1, Self::Rest>) {
+        let rest = this.clone_as_hidden();
+        let target = Field::cons(
+            this.value_no_usage_tracking,
+            this.tracker.new_child(Usage::Mut, tracker)
+        );
+        (target, rest)
+    }
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        _: UsageTracker
+    ) -> (Field<E2, &'y mut T>, Field<E1, Self::Rest>) {
+        let rest = this.clone_as_hidden();
+        let target = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
+    }
+}
+
+impl<'t, 'y, T> Acquire<&'t mut T, &'y T> for AcquireMarker
+where 't: 'y {
+    type Rest = &'t T;
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t mut T>,
+        tracker: UsageTracker
+    ) -> (Field<E2, &'y T>, Field<E1, Self::Rest>) {
+        (
+            Field::cons(
+                this.value_no_usage_tracking,
+                this.tracker.new_child(Usage::Ref, tracker)
+            ),
+            Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled()),
+        )
+    }
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn acquire<E: Bool, E1: Bool>(
+        this: Field<E, &'t mut T>,
+        _: UsageTracker
+    ) -> (Field<E1, &'y T>, Field<E, Self::Rest>) {
+        (Field::cons(this.value_no_usage_tracking), Field::cons(this.value_no_usage_tracking))
+    }
+}
+
+impl<'t, 'y, T> Acquire<&'t T, &'y T> for AcquireMarker
+where 't: 'y {
+    type Rest = &'t T;
+    #[inline(always)]
+    #[cfg(usage_tracking_enabled)]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t T>,
+        tracker: UsageTracker
+    ) -> (Field<E2, &'y T>, Field<E1, Self::Rest>) {
+        let target = Field::cons(
+            this.value_no_usage_tracking,
+            this.tracker.new_child(Usage::Ref, tracker)
+        );
+        let rest = Field::cons(this.value_no_usage_tracking, this.tracker.new_child_disabled());
+        (target, rest)
+    }
+    #[inline(always)]
+    #[cfg(not(usage_tracking_enabled))]
+    fn acquire<E1: Bool, E2: Bool>(
+        this: Field<E1, &'t T>,
+        _: UsageTracker
+    ) -> (Field<E2, &'y T>, Field<E1, Self::Rest>) {
+        let target = Field::cons(this.value_no_usage_tracking);
+        let rest = Field::cons(this.value_no_usage_tracking);
+        (target, rest)
+    }
+}
+
+// =================
+// === AsRefsMut ===
+// =================
+
+#[doc(hidden)]
+pub trait AsRefsMut {
+    type Target<'t> where Self: 't;
+    fn as_refs_mut(&mut self) -> Self::Target<'_>;
+}
 
 // ===============
 // === Partial ===
 // ===============
 
-/// Helper trait for [`Partial`]. This trait is automatically implemented by the [`borrow!`]
-/// macro. It is used to provide Rust type inferencer with additional type information. In particular, it
-/// is used to tell that any partial borrow of a struct results in the same struct type, but parametrized
-/// differently. It is needed for Rust to correctly infer target types for associated methods, like:
-///
-/// ```ignore
-/// #[derive(Partial)]
-/// #[module(crate)]
-/// pub struct Ctx {
-///     pub geometry: GeometryCtx,
-///     pub material: MaterialCtx,
-///     pub mesh: MeshCtx,
-///     pub scene: SceneCtx,
-/// }
-///
-/// impl p!(<mut geometry, mut material>Ctx) {
-///     fn my_method(&mut self){}
-/// }
-///
-/// fn test(ctx: p!(&<mut *> Ctx)) {
-///     ctx.partial_borrow().my_method();
-/// }
-/// ```
-pub trait PartialInferenceGuide<Target> {}
-
-/// Implementation of partial field borrowing. The `Target` type parameter specifies the required
-/// partial borrow representation, such as `p!(<mut field1, field2>MyStruct)`.
-///
-/// This trait is automatically implemented for all partial borrow representations.
-pub trait Partial<Target> : PartialInferenceGuide<Target> {
+pub trait Partial<'s, Target> {
     type Rest;
-
-    /// See the documentation of [`PartialHelper::partial_borrow`].
-    #[inline(always)]
-    fn partial_borrow_impl(&mut self) -> &mut Target {
-        unsafe { &mut *(self as *mut _ as *mut _) }
-    }
-
-    /// See the documentation of [`PartialHelper::split`].
-    #[inline(always)]
-    fn split_impl(&mut self) -> (&mut Target, &mut Self::Rest) {
-        let a = unsafe { &mut *(self as *mut _ as *mut _) };
-        let b = unsafe { &mut *(self as *mut _ as *mut _) };
-        (a, b)
-    }
+    fn split_impl(&'s mut self) -> (Target, Self::Rest);
 }
 
-impl<Source, Target> Partial<Target> for Source where
-Source: PartialInferenceGuide<Target>,
-Source: HasFields,
-Target: HasFields,
-Fields<Source>: SplitFields<Fields<Target>>,
-Target: ReplaceFields<SplitFieldsRest<Fields<Source>, Fields<Target>>> {
-    type Rest = ReplacedFields<Target, SplitFieldsRest<Fields<Source>, Fields<Target>>>;
+pub trait IntoPartial<Target> {
+    type Rest;
+    fn into_split_impl(self) -> (Target, Self::Rest);
 }
 
-/// Helper for [`Partial`]. This trait is automatically implemented for all types.
-impl<Target> PartialHelper for Target {}
+pub trait SplitHelper {
+    #[track_caller]
+    #[inline(always)]
+    fn split<'s, Target>(&'s mut self) -> (Target, Self::Rest)
+    where Self: Partial<'s, Target> {
+        self.split_impl()
+    }
+
+    #[track_caller]
+    #[inline(always)]
+    fn into_split<Target>(self) -> (Target, Self::Rest)
+    where Self: Sized + IntoPartial<Target> {
+        self.into_split_impl()
+    }
+}
+impl<T> SplitHelper for T {}
+
 pub trait PartialHelper {
-    /// Borrow fields from this partial borrow for the `Target` partial borrow, like
-    /// `ctx.partial_borrow::<p!(<mut scene>Ctx)>()`.
+    #[track_caller]
     #[inline(always)]
-    fn partial_borrow<Target>(&mut self) -> &mut Target
-    where Self: PartialNotEq<Target> { self.partial_borrow_impl() }
+    fn partial_borrow<'s, Target>(&'s mut self) -> Target
+    where Self: Partial<'s, Target> {
+        self.split_impl().0
+    }
 
-    /// Borrow fields from this partial borrow for the `Target` partial borrow, like
-    /// `ctx.partial_borrow_or_eq::<p!(<mut scene>Ctx)>()`.
-    ///
-    /// Unlike `partial_borrow` this also allows borrowing the same fields as in the
-    /// current partial borrow.
+    #[track_caller]
     #[inline(always)]
-    fn partial_borrow_or_eq<Target>(&mut self) -> &mut Target
-    where Self: Partial<Target> { self.partial_borrow_impl() }
+    fn into_partial_borrow<Target>(self) -> Target
+    where Self: Sized + IntoPartial<Target> {
+        self.into_split_impl().0
+    }
+}
+impl<T> PartialHelper for T {}
 
-    /// Split this partial borrow into the `Target` partial borrow and the remaining fields, like
-    /// `let (scene, ctx2) = ctx.split::<p!(<mut scene>Ctx)>()`.
+// === Default Impl ===
+
+impl<'s, T, Target> Partial<'s, Target> for T where
+    T: AsRefsMut + 's,
+    <T as AsRefsMut>::Target<'s>: IntoPartial<Target>,
+{
+    type Rest = <<T as AsRefsMut>::Target<'s> as IntoPartial<Target>>::Rest;
+    #[track_caller]
     #[inline(always)]
-    fn split<Target>(&mut self) -> (&mut Target, &mut Self::Rest)
-    where Self: Partial<Target> { self.split_impl() }
+    fn split_impl(&'s mut self) -> (Target, Self::Rest) {
+        self.as_refs_mut().into_split_impl()
+    }
 }
 
+// =====================
+// === Helper Macros ===
+// =====================
 
-// ====================
-// === PartialNotEq ===
-// ====================
-
-pub trait PartialNotEq<Target> : Partial<Target> + NotEq<Target> {}
-impl<Target, T> PartialNotEq<Target> for T where T: Partial<Target> + NotEq<Target> {}
-
+#[doc(hidden)]
+#[macro_export]
+macro_rules! field {
+    ($s:ty, $n:tt,) => { borrow::Hidden };
+    ($s:ty, $n:tt, $($ts:tt)+) => { $($ts)+ borrow::ItemAt<borrow::$n, borrow::Fields<$s>> };
+}
 
 // =============
-// === NotEq ===
+// === Tests ===
 // =============
 
-pub trait NotEq<Target> {}
-impl<Source, Target> NotEq<Target> for Source where
-    Source: HasFields,
-    Target: HasFields,
-    Fields<Source>: NotEqFields<Fields<Target>> {
-}
-
-pub trait NotEqFields<Target> {}
-impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<Hidden<H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<Hidden<H>, T2> {}
-impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<Hidden<H>, T2> where T: NotEqFields<T2> {}
-
-impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ mut H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ mut H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ mut H, T2> where T: NotEqFields<T2> {}
-
-impl<H, T, T2> NotEqFields<Cons<Hidden<H>, T>> for Cons<&'_ H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_ mut H, T>> for Cons<&'_ H, T2> {}
-impl<H, T, T2> NotEqFields<Cons<&'_     H, T>> for Cons<&'_ H, T2> where T: NotEqFields<T2> {}
-
-
-// ==================
-// === UnifyField ===
-// ==================
-
-pub trait UnifyField<Other> { type Result; }
-
-impl<    T> UnifyField<Hidden<T>> for Hidden<T> { type Result = Hidden<T>; }
-impl<'t, T> UnifyField<&'t     T> for Hidden<T> { type Result = &'t     T; }
-impl<'t, T> UnifyField<&'t mut T> for Hidden<T> { type Result = &'t mut T; }
-
-impl<'t, T> UnifyField<Hidden<T>> for &'t T { type Result = &'t     T; }
-impl<'t, T> UnifyField<&'t     T> for &'t T { type Result = &'t     T; }
-impl<'t, T> UnifyField<&'t mut T> for &'t T { type Result = &'t mut T; }
-
-impl<'t, T> UnifyField<Hidden<T>> for &'t mut T { type Result = &'t mut T; }
-impl<'t, T> UnifyField<&'t     T> for &'t mut T { type Result = &'t mut T; }
-impl<'t, T> UnifyField<&'t mut T> for &'t mut T { type Result = &'t mut T; }
-
-type ConcatenatedField<T, Other> = <T as UnifyField<Other>>::Result;
-
-
-// ====================
-// === UnifyFields ===
-// ====================
-
-pub trait UnifyFields<Other> { type Result; }
-type ConcatFieldsResult<T, Other> = <T as UnifyFields<Other>>::Result;
-
-impl UnifyFields<Nil> for Nil {
-    type Result = Nil;
-}
-
-impl<H, H2, T, T2> UnifyFields<Cons<H2, T2>> for Cons<H, T> where
-    H: UnifyField<H2>,
-    T: UnifyFields<T2> {
-    type Result = Cons<ConcatenatedField<H, H2>, <T as UnifyFields<T2>>::Result>;
-}
-
-pub trait Unify<Other> {
-    type Result;
-}
-
-impl<Source, Other> Unify<Other> for Source where
-    Source: HasFields,
-    Other: HasFields,
-    Fields<Source>: UnifyFields<Fields<Other>>,
-    Other: ReplaceFields<ConcatFieldsResult<Fields<Source>, Fields<Other>>> {
-    type Result = ReplacedFields<Other, ConcatFieldsResult<Fields<Source>, Fields<Other>>>;
-}
-
-pub type Union<T, Other> = <T as Unify<Other>>::Result;
-
-
-// ==============
-// === Macros ===
-// ==============
-
-#[macro_export]
-macro_rules! lifetime_chooser {
-    ([$lt1:lifetime]               $($ts:tt)*) => {& $lt1 $($ts)*};
-    ([$lt1:lifetime $lt2:lifetime] $($ts:tt)*) => {& $lt2 $($ts)*};
-}
-
-#[macro_export]
-macro_rules! partial {
-    // &'a <...> Ctx <...>
-    (& $lt:lifetime $($ts:tt)*) => { & $lt mut $crate::partial! { $($ts)* } };
-    (& $($ts:tt)*)              => { &     mut $crate::partial! { $($ts)* } };
-    (< $($ts:tt)*)              => {           $crate::partial! { @1 [] $($ts)* } };
-
-    // <...> Ctx <...>
-    (@1 $fs:tt       > $n:ident $($ts:tt)*) => { $crate::partial! { @2 $n $fs          $($ts)* } };
-    (@1 [$($fs:tt)*]   $t:tt    $($ts:tt)*) => { $crate::partial! { @1    [$($fs)* $t] $($ts)* } };
-
-    // Ctx <...>
-    (@2 $n:ident $fs:tt)              => { $crate::partial! { @4 $n [] $fs } };
-    (@2 $n:ident $fs:tt < $($ts:tt)*) => { $crate::partial! { @3 $n [] $fs $($ts)* } };
-
-    // <...>
-    (@3 $n:ident $ps:tt       $fs:tt >)                => { $crate::partial! { @4 $n $ps          $fs } };
-    (@3 $n:ident [$($ps:tt)*] $fs:tt $t:tt $($ts:tt)*) => { $crate::partial! { @3 $n [$($ps)* $t] $fs $($ts)* } };
-
-    // Production
-    (@4 $n:ident $ps:tt [$($fs:tt)*]) => { $n! { $ps $($fs)* } };
-}
+// use borrow::partial as p;
+//
+// pub struct GeometryCtx {}
+// pub struct MaterialCtx {}
+// pub struct MeshCtx {}
+// pub struct SceneCtx {}
+//
+// #[derive(borrow::Partial)]
+// #[module(crate)]
+// pub struct Ctx<'t, T: Debug> {
+//     pub version: &'t T,
+//     pub geometry: GeometryCtx,
+//     pub material: MaterialCtx,
+//     pub mesh: MeshCtx,
+//     pub scene: SceneCtx,
+// }
+//
+// pub fn test() {
+//     let mut ctx = Ctx {
+//         version: &0,
+//         geometry: GeometryCtx {},
+//         material: MaterialCtx {},
+//         mesh: MeshCtx {},
+//         scene: SceneCtx {},
+//     };
+//     test2(p!(&mut ctx));
+// }
+//
+// pub fn test2<'t>(ctx: p!(&<mut *> Ctx<'t, usize>)) {
+//     let _ = &*ctx.version;
+// }
+//

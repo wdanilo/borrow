@@ -2,67 +2,36 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 
-use proc_macro::TokenStream;
+use std::fmt::Debug;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Path};
+use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Type};
 use itertools::Itertools;
-use proc_macro2::{Span};
-use proc_macro2 as pm;
-
+use proc_macro2::TokenStream;
+use proc_macro2::Span;
+use syn::Token;
+use syn::parse::Parse;
+use syn::parse::ParseStream;
 
 // =============
 // === Utils ===
 // =============
 
-/// Get the current crate name;
-fn crate_name() -> Ident {
-    let macro_lib = env!("CARGO_PKG_NAME");
-    let suffix = "-macro";
-    if !macro_lib.ends_with(suffix) { panic!("Internal error.") }
-    let crate_name = &macro_lib[..macro_lib.len() - suffix.len()].replace('-',"_");
-    Ident::new(crate_name, Span::call_site())
-}
-
-/// Extract the module macro attribute.
-fn extract_module_attr(input: &DeriveInput) -> Path {
-    let mut module: Option<Path> = None;
-    for attr in &input.attrs {
-        if attr.path().is_ident("module") {
-            let tokens = attr.meta.require_list().unwrap().tokens.clone();
-            if let Ok(path) = syn::parse2::<Path>(tokens) {
-                module = Some(path);
-            }
+fn snake_to_camel(s: &str) -> String {
+    s.split('_').map(|s| {
+        let mut chars = s.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(f) => f.to_uppercase().chain(chars).collect()
         }
-    }
-    module.expect("The 'module' attribute is required.")
+    }).collect()
 }
 
+fn internal(s: &str) -> String {
+    format!("__{s}")
+}
 
-// =============
-// === Macro ===
-// =============
-
-/// Derive impl. Comments in the code show expansion of the following example struct:
-/// ```ignore
-/// pub struct Ctx<'v, V: Debug> {
-///     version: &'v V,
-///     pub geometry: GeometryCtx,
-///     pub material: MaterialCtx,
-///     pub mesh: MeshCtx,
-///     pub scene: SceneCtx,
-/// }
-/// ```
-#[allow(clippy::cognitive_complexity)]
-#[proc_macro_derive(Partial, attributes(module))]
-pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
-    let lib = crate_name();
-    let input = parse_macro_input!(input as DeriveInput);
-    let module = extract_module_attr(&input);
-
-    let struct_ident = input.ident;
-    let ref_struct_ident = Ident::new(&format!("{struct_ident}Ref"), struct_ident.span());
-
-    let fields = if let Data::Struct(data) = &input.data {
+fn get_fields(input: &DeriveInput) -> Vec<&syn::Field> {
+    if let Data::Struct(data) = &input.data {
         if let Fields::Named(fields) = &data.fields {
             fields.named.iter().collect::<Vec<_>>()
         } else {
@@ -70,421 +39,955 @@ pub fn partial_borrow_derive(input: TokenStream) -> TokenStream {
         }
     } else {
         Vec::new()
-    };
+    }
+}
 
-    let generics = input.generics.params.iter().collect_vec();
-    let struct_lifetimes = generics.iter().filter_map(|g| {
-        if let syn::GenericParam::Lifetime(lt) = g {
+fn get_params(input: &DeriveInput) -> TokenStream {
+    let lifetimes = input.generics.params.iter().filter_map(|t| {
+        if let syn::GenericParam::Lifetime(lt) = t {
             Some(lt)
         } else {
             None
         }
     }).collect_vec();
 
-    let struct_params = generics.iter().filter_map(|g| {
-        if let syn::GenericParam::Type(ty) = g {
+    let ty_params = input.generics.params.iter().filter_map(|t| {
+        if let syn::GenericParam::Type(ty) = t {
             Some(ty.ident.clone())
         } else {
             None
         }
     }).collect_vec();
+    quote! {#(#lifetimes,)* #(#ty_params,)*}
+}
 
-    let struct_inline_bounds = generics.iter().filter_map(|g| {
-        if let syn::GenericParam::Type(ty) = g {
-            (!ty.bounds.is_empty()).then_some(ty)
+fn get_bounds(input: &DeriveInput) -> TokenStream {
+    let inline_bounds = input.generics.params.iter().filter_map(|t| {
+        if let syn::GenericParam::Type(ty) = t {
+            (!ty.bounds.is_empty()).then_some(quote!{#ty})
         } else {
             None
         }
     }).collect_vec();
 
-    let struct_where_bounds = input.generics.where_clause.as_ref().map(|w| w.predicates.iter().collect_vec()).unwrap_or_default();
+    let where_bounds = input.generics.where_clause.as_ref().map(|t|
+        t.predicates.iter().map(|t| quote!{#t}).collect_vec()
+    ).unwrap_or_default();
 
-    let struct_bounds = struct_inline_bounds.iter().map(|ty| {
-        quote! {#ty}
-    }).chain(struct_where_bounds.iter().map(|p| quote! {#p})).collect_vec();
+    quote! {#(#inline_bounds,)* #(#where_bounds,)*}
+}
 
-    let field_vis = fields.iter().map(|f| f.vis.clone()).collect_vec();
-    let field_idents = fields.iter().map(|f| f.ident.as_ref().unwrap()).collect_vec();
+
+fn get_module_tokens(attr: &syn::Attribute) -> Option<TokenStream> {
+    if !attr.path().is_ident("module") {
+        return None;
+    }
+
+    // Parse as Meta::List to get access to the tokens inside
+    match &attr.meta {
+        syn::Meta::List(syn::MetaList { tokens, .. }) => Some(tokens.clone()),
+        _ => None,
+    }
+}
+
+// ===================
+// === Meta Derive ===
+// ===================
+
+fn meta_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let ident = &input.ident;
+    let fields = get_fields(&input);
+    let params = get_params(&input);
+    let bounds = get_bounds(&input);
     let field_types = fields.iter().map(|f| &f.ty).collect_vec();
-    let params = field_idents.iter().map(|i| Ident::new(&format!("__{i}"), i.span())).collect_vec();
 
-    // Generates:
-    // #[repr(C)]
-    // pub struct CtxRef<version, geometry, material, mesh, scene> {
-    //     version: version,
-    //     pub geometry: geometry,
-    //     pub material: material,
-    //     pub mesh: mesh,
-    //     pub scene: scene,
-    // }
-    let ref_struct = quote! {
-        #[derive(Debug)]
-        #[repr(C)]
-        #[allow(non_camel_case_types)]
-        pub struct #ref_struct_ident<#(#params,)*> {
-            #(#field_vis #field_idents : #params),*
+    let has_fields_for_struct = quote! {
+        impl<#params> borrow::HasFields for #ident<#params>
+        where #bounds {
+            type Fields = borrow::HList![#(#field_types,)*];
         }
     };
 
-    // Generates:
-    // impl<version_target, geometry_target, material_target, mesh_target, scene_target,
-    //      version,        geometry,        material,        mesh,        scene>
-    // PartialInferenceGuide<
-    //       CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>
-    // > for CtxRef<version,        geometry,        material,        mesh,        scene> {}
-    let impl_inference_guide = {
-        let target_params = params.iter().map(|i| Ident::new(&format!("{i}_target"), i.span())).collect_vec();
+    let has_fields_ext_for_struct = {
+        let fields_hidden = field_types.iter().map(|_| quote! {borrow::Hidden});
+        let fields_ref    = field_types.iter().map(|t| quote! {&'__a #t});
+        let fields_mut    = field_types.iter().map(|t| quote! {&'__a mut #t});
         quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#params,)* #(#target_params,)*>
-            #lib::PartialInferenceGuide<#ref_struct_ident<#(#target_params,)*>>
-            for #ref_struct_ident<#(#params,)*> {}
-        }
-    };
-
-    // Generates:
-    // impl<'t, 'v, V, __version, __geometry, __material, __mesh, __scene>
-    // AsRefs<'t, CtxRef<__version, __geometry, __material, __mesh, __scene>> for Ctx<'v, V>
-    // where
-    //     V:           Debug,
-    //     (&'v V):     RefCast<'t, __version>,
-    //     GeometryCtx: RefCast<'t, __geometry>,
-    //     MaterialCtx: RefCast<'t, __material>,
-    //     MeshCtx:     RefCast<'t, __mesh>,
-    //     SceneCtx:    RefCast<'t, __scene>,
-    // {
-    //     fn as_refs_impl(&'t mut self) -> CtxRef<__version, __geometry, __material, __mesh, __scene> {
-    //         CtxRef {
-    //             version:  RefCast::ref_cast(&mut self.version),
-    //             geometry: RefCast::ref_cast(&mut self.geometry),
-    //             material: RefCast::ref_cast(&mut self.material),
-    //             mesh:     RefCast::ref_cast(&mut self.mesh),
-    //             scene:    RefCast::ref_cast(&mut self.scene),
-    //         }
-    //     }
-    // }
-    let impl_as_refs = quote! {
-        #[allow(non_camel_case_types)]
-        impl<'_t, #(#struct_lifetimes,)* #(#struct_params,)* #(#params,)*>
-        #lib::AsRefs<'_t, #ref_struct_ident<#(#params,)*>> for #struct_ident<#(#struct_lifetimes,)* #(#struct_params,)*>
-        where
-            #(#struct_bounds,)*
-            #(#field_types: #lib::RefCast<'_t, #params>,)*
-        {
-            #[inline(always)]
-            fn as_refs_impl(& '_t mut self) -> #ref_struct_ident<#(#params,)*> {
-                #ref_struct_ident {
-                    #(#field_idents: #lib::RefCast::ref_cast(&mut self.#field_idents),)*
-                }
-            }
-        }
-    };
-
-    // Generates:
-    // impl<'v, V> Ctx<'v, V>
-    // where V: Debug
-    // {
-    //     pub fn as_refs_mut(&mut self) -> CtxRef<&mut &'v V, &mut GeometryCtx, &mut MaterialCtx, &mut MeshCtx, &mut SceneCtx> {
-    //         CtxRef {
-    //             version:  &mut self.version,
-    //             geometry: &mut self.geometry,
-    //             material: &mut self.material,
-    //             mesh:     &mut self.mesh,
-    //             scene:    &mut self.scene,
-    //         }
-    //     }
-    // }
-    let impl_as_refs_mut = {
-        quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#struct_lifetimes,)* #(#struct_params,)*> #struct_ident<#(#struct_lifetimes,)* #(#struct_params,)*>
-            where
-                #(#struct_bounds,)*
-            {
-                #[inline(always)]
-                pub fn as_refs_mut(&mut self) -> #ref_struct_ident<#(&mut #field_types,)*> {
-                    #ref_struct_ident {
-                        #(#field_idents: &mut self.#field_idents,)*
-                    }
-                }
-            }
-        }
-    };
-
-
-    // Generates:
-    // impl<'v, V: Debug> HasFields for Ctx<'v, V> {
-    //     type Fields = HList![&'v V, GeometryCtx, MaterialCtx, MeshCtx, SceneCtx];
-    // }
-    let impl_has_fields = {
-        quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#struct_lifetimes,)* #(#struct_params,)*>
-            #lib::HasFields for #struct_ident<#(#struct_lifetimes,)* #(#struct_params,)*>
-            where #(#struct_bounds,)* {
-                type Fields = #lib::HList!{#(#field_types,)*};
-            }
-        }
-    };
-
-    // Generates:
-    // impl<version, geometry, material, mesh, scene>
-    // HasFields for CtxRef<version, geometry, material, mesh, scene> {
-    //     type Fields = HList![version, geometry, material, mesh, scene];
-    // }
-    let impl_ref_has_fields = {
-        quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#params,)*>
-            #lib::HasFields for #ref_struct_ident<#(#params,)*> {
-                type Fields = #lib::HList!{#(#params,)*};
-            }
-        }
-    };
-
-    // Generates:
-    // impl<version_target, geometry_target, material_target, mesh_target, scene_target,
-    //      version,        geometry,        material,        mesh,        scene>
-    // ReplaceFields<HList![version_target, geometry_target, material_target, mesh_target, scene_target]>
-    // for CtxRef<version, geometry, material, mesh, scene> {
-    //     type Result = CtxRef<version_target, geometry_target, material_target, mesh_target, scene_target>;
-    // }
-    let impl_from_fields = {
-        let target_params = params.iter().map(|i| Ident::new(&format!("{i}_target"), i.span())).collect_vec();
-        quote! {
-            #[allow(non_camel_case_types)]
-            impl<#(#params,)* #(#target_params,)*>
-            #lib::ReplaceFields<#lib::HList!{#(#target_params,)*}> for #ref_struct_ident<#(#params,)*> {
-                type Result = #ref_struct_ident<#(#target_params,)*>;
-            }
-        }
-    };
-
-    // Generates:
-    // #[macro_export]
-    // macro_rules! _Ctx {
-    //     (@ [$($ps:tt)*] $lt:lifetime $ts:tt [, $($lt2:lifetime)? * $($xs:tt)*]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N0, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N1, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N2, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N3, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N4, Ctx<$($ps)*>> }]
-    //         ] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime $ts:tt [, $($lt2:lifetime)? mut * $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N0, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N1, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N2, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N3, Ctx<$($ps)*>> }]
-    //             [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N4, Ctx<$($ps)*>> }]
-    //         ] [$ ($xs) *] }
-    //     };
-    //
-    //
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? version $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [[lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N0, Ctx<$($ps)*>>}] $t1 $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? geometry $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N1, Ctx<$($ps)*>>}] $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? material $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N2, Ctx<$($ps)*>>}] $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? mesh $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N3, Ctx<$($ps)*>>}] $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? $(ref)? scene $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 $t3 [lifetime_chooser!{ [$lt $($lt2)?] FieldAt<hlist::N4, Ctx<$($ps)*>>}]] [$ ($xs) *] }
-    //     };
-    //
-    //
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut version $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [[lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N0, Ctx<$($ps)*>>}] $t1 $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut geometry $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N1, Ctx<$($ps)*>>}] $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)?mut material $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N2, Ctx<$($ps)*>>}] $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut mesh $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N3, Ctx<$($ps)*>>}] $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, $($lt2:lifetime)? mut scene $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 $t3 [lifetime_chooser!{ [$lt $($lt2)?] mut FieldAt<hlist::N4, Ctx<$($ps)*>>}]] [$ ($xs) *] }
-    //     };
-    //
-    //
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! version $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [[Hidden<FieldAt<hlist::N0, Ctx<$($ps)*>>>] $t1 $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! geometry $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 [Hidden<FieldAt<hlist::N1, Ctx<$($ps)*>>>] $t2 $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! material $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 [Hidden<FieldAt<hlist::N2, Ctx<$($ps)*>>>] $t3 $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! mesh $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 [Hidden<FieldAt<hlist::N3, Ctx<$($ps)*>>>] $t4] [$ ($xs) *] }
-    //     };
-    //     (@ [$($ps:tt)*] $lt:lifetime [$t0:tt $t1:tt $t2:tt $t3:tt $t4:tt] [, ! scene $ ($xs:tt) *]) => {
-    //         _Ctx! { @ [$($ps)*] $lt [$t0 $t1 $t2 $t3 [Hidden<FieldAt<hlist::N4, Ctx<$($ps)*>>>]] [$ ($xs) *] }
-    //     };
-    //
-    //
-    //     (@ $ps:tt $lt:lifetime [$ ([$ ($ts:tt) *]) *] [$ (,) *]) => {
-    //         CtxRef < $ ($ ($ts) *), * >
-    //     };
-    //
-    //     (@ $($ts:tt)*) => { MACRO_EXPAND_ERROR! { $($ts)* } };
-    //
-    //     ([$($ps:tt)*] $lt:lifetime $ ($ts:tt) *) => {
-    //         _Ctx! { @ [$($ps)*] $lt [
-    //             [Hidden<FieldAt<hlist::N0, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N1, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N2, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N3, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N4, Ctx<$($ps)*>>>]
-    //         ] [$($ts)*] }
-    //     };
-    //
-    //     ([$($ps:tt)*] $($ts:tt)*) => {
-    //         _Ctx! { @ [$($ps)*] '_ [
-    //             [Hidden<FieldAt<hlist::N0, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N1, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N2, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N3, Ctx<$($ps)*>>>]
-    //             [Hidden<FieldAt<hlist::N4, Ctx<$($ps)*>>>]
-    //         ] [, $ ($ts) *] }
-    //     };
-    // }
-    // pub use _Ctx as Ctx;
-    let ref_macro = {
-        let fields_at = (0..field_idents.len()).map(|i| {
-            let n = Ident::new(&format!("N{i}"), Span::call_site());
-            quote! {#lib::FieldAt<#lib::hlist::#n, #struct_ident<$($ps)*>>}
-        }
-        ).collect_vec();
-
-        let all_hidden = quote! {#([#lib::Hidden<#fields_at>])*};
-        let all_ref = quote! {#([#lib::lifetime_chooser!{[$lt $($lt2)?] #fields_at}])*};
-        let all_ref_mut = quote! {#([#lib::lifetime_chooser!{[$lt $($lt2)?] mut #fields_at}])*};
-        let ts_idents = field_idents.iter().enumerate().map(|(i, _)| Ident::new(&format!("t{i}"), Span::call_site())).collect_vec();
-        let ts = ts_idents.iter().map(|t| quote!($#t)).collect_vec();
-        let struct_ident2 = Ident::new(&format!("_{struct_ident}"), struct_ident.span());
-        let gen_patterns = |pattern: pm::TokenStream, f: Box<dyn Fn(&pm::TokenStream) -> pm::TokenStream>| {
-            field_idents.iter().zip(fields_at.iter()).enumerate().map(|(i, (name, tp))| {
-                let result = f(tp);
-                let mut results = ts.iter().collect_vec();
-                results[i] = &result;
-                quote! {
-                    (@ [$($ps:tt)*] $lt:lifetime [#(#ts:tt)*] [, #pattern #name $($xs:tt)*]) => {
-                        #module::#struct_ident! {@ [$($ps)*]  $lt [#(#results)*] [$($xs)*]}
-                    };
-                }
-            }).collect_vec()
-        };
-        let patterns_ref = gen_patterns(quote!{$($lt2:lifetime)? $(ref)?}, Box::new(|t: &pm::TokenStream| quote!{[#lib::lifetime_chooser!{[$lt $($lt2)?] #t}]}));
-        let patterns_ref_mut = gen_patterns(quote!{$($lt2:lifetime)? mut}, Box::new(|t: &pm::TokenStream| quote!{[#lib::lifetime_chooser!{[$lt $($lt2)?] mut #t}]}));
-        let patterns_ref_none = gen_patterns(quote!{!}, Box::new(|t: &pm::TokenStream| quote!{[#lib::Hidden<#t >]}));
-        quote! {
-            #[macro_export]
-            #[allow(clippy::crate_in_macro_def)]
-            macro_rules! #struct_ident2 {
-                (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, ! * $($xs:tt)*]) => {
-                    #module::#struct_ident! {@ [$($ps)*]  $lt [#all_hidden] [$($xs)*]}
-                };
-                (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, $($lt2:lifetime)? * $($xs:tt)*]) => {
-                    #module::#struct_ident! {@ [$($ps)*]  $lt [#all_ref] [$($xs)*]}
-                };
-                (@ [$($ps:tt)*]  $lt:lifetime [#(#ts:tt)*] [, $($lt2:lifetime)? mut * $($xs:tt)*]) => {
-                    #module::#struct_ident! {@ [$($ps)*]  $lt [#all_ref_mut] [$($xs)*]}
-                };
-                #(#patterns_ref)*
-                #(#patterns_ref_mut)*
-                #(#patterns_ref_none)*
-                (@ [$($ps:tt)*]  $lt:lifetime [$([$($ts:tt)*])*] [$(,)*]) => { #module::#ref_struct_ident<$($($ts)*),*> };
-                (@ [$($ps:tt)*]  $($ts:tt)*) => { MACRO_EXPANSION_ERROR!($($ts)*) };
-
-                ([$($ps:tt)*] $lt:lifetime, $($ts:tt)*) => {
-                    #module::#struct_ident! {@ [$($ps)*] $lt [#all_hidden] [, $($ts)*]}
-                };
-                ([$($ps:tt)*] $($ts:tt)*) => {
-                    #module::#struct_ident! {@ [$($ps)*] '_ [#all_hidden] [,$($ts)*]}
-                };
-            }
-
-            pub use #struct_ident2 as #struct_ident;
-        }
-    };
-
-    // Generates:
-    // #[allow(non_camel_case_types)]
-    // impl<'t, version, geometry, material, mesh, scene>
-    //     CtxRef<version, geometry, material, mesh, scene>
-    // where
-    // {
-    //     #[inline(always)]
-    //     pub fn extract_version(&'t mut self) -> (
-    //         <version as RefFlatten<'t>>::Output,
-    //         &'t mut CtxRef<Acquired<version, version>, geometry, material, mesh, scene>
-    //     ) where version: Acquire<version> + RefFlatten<'t> {
-    //         let rest = unsafe { &mut *(self as *mut _ as *mut _) };
-    //         (self.version.ref_flatten(), rest)
-    //     }
-    //
-    //     ...
-    // }
-    let impl_extract_fields = {
-        let idents_str = field_idents.iter().map(|t| t.to_string()).collect_vec();
-        let fns = idents_str.iter().map(|field_str| {
-            let params = idents_str.iter().map(|i| {
-                if i == field_str {
-                    let ident = Ident::new(&format!("__{i}"), Span::call_site());
-                    quote!{#lib::Acquired<#ident, #ident>}
-                } else {
-                    let ident = Ident::new(&format!("__{i}"), Span::call_site());
-                    quote!{#ident}
-                }
-            }).collect_vec();
-            let param = Ident::new(&format!("__{field_str}"), Span::call_site());
-            let field = Ident::new(field_str, Span::call_site());
-            let name = Ident::new(&format!("extract_{field}"), field.span());
-            quote! {
-                #[inline(always)]
-                pub fn #name(&'t mut self) -> (
-                    <#param as #lib::RefFlatten<'t>>::Output,
-                    &'t mut #ref_struct_ident<#(#params,)*>
-                ) where #param: #lib::Acquire<#param> + #lib::RefFlatten<'t> {
-                    let rest = unsafe { &mut *(self as *mut _ as *mut _) };
-                    (self.#field.ref_flatten(), rest)
-                }
-            }
-        }).collect_vec();
-        quote! {
-            #[allow(non_camel_case_types)]
-            impl<'t, #(#params,)*> #ref_struct_ident<#(#params,)*> where
-            {
-                #(#fns)*
+            impl<#params> borrow::HasFieldsExt for #ident<#params>
+            where #bounds {
+                type FieldsAsHidden = borrow::HList![ #(#fields_hidden,)* ];
+                type FieldsAsRef<'__a> = borrow::HList![ #(#fields_ref,)* ] where Self: '__a;
+                type FieldsAsMut<'__a> = borrow::HList![ #(#fields_mut,)* ] where Self: '__a;
             }
         }
     };
 
     let out = quote! {
-        #ref_struct
-        #impl_inference_guide
-        #impl_as_refs
-        #impl_as_refs_mut
-        #impl_has_fields
-        #impl_ref_has_fields
-        #impl_from_fields
-        #ref_macro
-        #impl_extract_fields
+        #has_fields_for_struct
+        #has_fields_ext_for_struct
     };
 
-    // println!(">>> {}", out);
-    TokenStream::from(out)
+    out.into()
+}
+
+// ======================
+// === Partial Derive ===
+// ======================
+
+// The internal macro documentation shows expansion parts for the following input:
+// ```
+// pub struct GeometryCtx {}
+// pub struct MaterialCtx {}
+// pub struct MeshCtx {}
+// pub struct SceneCtx {}
+//
+// #[derive(borrow::Partial)]
+// pub struct Ctx<'t, T: Debug> {
+//     pub version: &'t T,
+//     pub geometry: GeometryCtx,
+//     pub material: MaterialCtx,
+//     pub mesh: MeshCtx,
+//     pub scene: SceneCtx,
+// }
+//```
+#[allow(clippy::cognitive_complexity)]
+#[proc_macro_derive(Partial, attributes(module))]
+pub fn partial_borrow_derive(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
+
+    let input_raw2 = input_raw.clone();
+    let input = parse_macro_input!(input_raw2 as DeriveInput);
+
+    let path = input.attrs.iter()
+        .find_map(get_module_tokens)
+        .expect("Expected #[module(...)] attribute");
+
+    let ident = &input.ident;
+    let fields = get_fields(&input);
+    let params = get_params(&input);
+    let bounds = get_bounds(&input);
+
+    let fields_vis = fields.iter().map(|f| f.vis.clone()).collect_vec();
+    let fields_ident = fields.iter().map(|f| f.ident.as_ref().unwrap()).collect_vec();
+    let fields_ty = fields.iter().map(|f| &f.ty).collect_vec();
+
+    // Fields in the form __$upper_case_field__
+    let fields_param = fields.iter().map(|f| {
+        let ident = f.ident.as_ref().unwrap();
+        Ident::new(&format!("__{}", snake_to_camel(&ident.to_string())), ident.span())
+    }).collect_vec();
+
+
+
+    let mut out: Vec<TokenStream> = vec![];
+
+    // === Ctx 1 ===
+
+    out.push(meta_derive(input_raw.clone()).into());
+
+    // === CtxRef 1 ===
+
+    let ref_ident = Ident::new(&format!("{ident}Ref"), ident.span());
+
+    // Generates:
+    //
+    // ```
+    // pub struct CtxRef<__Self__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene> {
+    //     pub version: borrow::Field<__Track__, __Version>,
+    //     pub geometry: borrow::Field<__Track__, __Geometry>,
+    //     pub material: borrow::Field<__Track__, __Material>,
+    //     pub mesh: borrow::Field<__Track__, __Mesh>,
+    //     pub scene: borrow::Field<__Track__, __Scene>,
+    //     pub marker: std::marker::PhantomData<__Self__>,
+    //     pub usage_tracker: borrow::UsageTracker,
+    // }
+    // ```
+    let ref_struct_def = {
+        quote! {
+            pub struct #ref_ident<__S__, __Track__, #(#fields_param,)*>
+            where __Track__: borrow::Bool {
+                #(#fields_vis #fields_ident: borrow::Field<__Track__, #fields_param>,)*
+                marker: std::marker::PhantomData<__S__>,
+                usage_tracker: borrow::UsageTracker,
+            }
+        }
+    };
+
+    out.push(ref_struct_def.clone());
+    out.push(meta_derive(ref_struct_def.into()).into());
+
+    // Generates:
+    //
+    // ```
+    // #[macro_export]
+    // macro_rules! CtxMacro {
+    //     (@0 $pfx:tt $track:tt $s:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s [] [] [] [] [] $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt *        $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $n  $n  $n  $n  $n  $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt version  $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $n  $t1 $t2 $t3 $t4 $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt geometry $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $t0 $n  $t2 $t3 $t4 $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt material $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $t0 $t1 $n  $t3 $t4 $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt mesh     $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $t0 $t1 $t2 $n  $t4 $($ts)* } };
+    //     (@1 $pfx:tt $track:tt $s:tt $t0:tt $t1:tt $t2:tt $t3:tt $t4:tt scene    $n:tt $($ts:tt)*) => { $crate::Ctx! { @1 $pfx $track $s $t0 $t1 $t2 $t3 $n  $($ts)* } };
+    //     (@1 [$($pfx:tt)*] [$($track:tt)*] [$s:ty] [$($t0:tt)*] [$($t1:tt)*] [$($t2:tt)*] [$($t3:tt)*] [$($t4:tt)*] ) => {
+    //         $($pfx)* CtxRef<
+    //             $s,
+    //             $($track)*,
+    //             borrow::field!{$s, N0, $($t0)*},
+    //             borrow::field!{$s, N1, $($t1)*},
+    //             borrow::field!{$s, N2, $($t2)*},
+    //             borrow::field!{$s, N3, $($t3)*},
+    //             borrow::field!{$s, N4, $($t4)*}
+    //         >
+    //     };
+    // }
+    // pub use CtxMacro as Ctx;
+    // ```
+    out.push({
+        fn matcher(i: usize) -> Ident {
+            Ident::new(&format!("t{i}"), Span::call_site())
+        }
+        let macro_ident = Ident::new(&format!("{ident}Macro"), ident.span());
+        let matchers = (0..fields_ident.len()).map(matcher).map(|t| quote!{$#t:tt}).collect_vec();
+        let def_results  = (0..fields_ident.len()).map(matcher).map(|t| quote!{$#t}).collect_vec();
+        let init_rule = {
+            let all_empty = (0..fields_ident.len()).map(|_| quote!{[]}).collect_vec();
+            quote! {
+                (@0 $pfx:tt $track:tt $s:tt $($ts:tt)*) => {
+                    #path::#ident! { @1 $pfx $track $s #(#all_empty)* $($ts)* }
+                };
+            }
+        };
+        let field_rules = fields_ident.iter().enumerate().map(|(i, field)| {
+            let mut results = def_results.clone();
+            results[i] = quote! {$n};
+            quote! {
+                (@1 $pfx:tt $track:tt $s:tt #(#matchers)* #field $n:tt $($ts:tt)*) => {
+                    #path::#ident! { @1 $pfx $track $s #(#results)* $($ts)* }
+                };
+            }
+        });
+        let star_rule = {
+            let all_n_results = (0..fields_ident.len()).map(|_| quote!{$n}).collect_vec();
+            quote! {
+                (@1 $pfx:tt $track:tt $s:tt #(#matchers)* * $n:tt $($ts:tt)*) => {
+                    #path::#ident! { @1 $pfx $track $s #(#all_n_results)*  $($ts)* }
+                };
+            }
+        };
+        let production = {
+            let matchers_exp = (0..fields_ident.len()).map(matcher).map(|t|
+                quote!{[$($#t:tt)*]}
+            ).collect_vec();
+            let fields = def_results.iter().enumerate().map(|(i, t)| {
+                let n = Ident::new(&format!("N{i}"), Span::call_site());
+                quote! {
+                    borrow::field!{$s, #n, $(#t)*}
+                }
+            }).collect_vec();
+            quote! {
+                (@1 [$($pfx:tt)*] [$($track:tt)*] [$s:ty] #(#matchers_exp)* ) => {
+                    $($pfx)* #path::#ref_ident<$s, $($track)*, #(#fields,)*>
+                };
+            }
+        };
+        quote! {
+            #[macro_export]
+            macro_rules! #macro_ident {
+                #init_rule
+                #star_rule
+                #(#field_rules)*
+                #production
+            }
+            pub use #macro_ident as #ident;
+        }
+    });
+
+    // Generates:
+    //
+    // ```
+    // impl<'t, T, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // borrow::AsRefWithFields<borrow::HList![__Version, __Geometry, __Material, __Mesh, __Scene]>
+    // for Ctx<'t, T>
+    // where T: Debug {
+    //     type Output = CtxRef<Ctx<'t, T>, borrow::True, __Version, __Geometry, __Material, __Mesh, __Scene>;
+    // }
+    // ```
+    out.push(
+        quote! {
+            impl<#params #(#fields_param,)*>
+            borrow::AsRefWithFields<borrow::HList![#(#fields_param,)*]>
+            for #ident<#params>
+            where #bounds {
+                type Output = #ref_ident<#ident<#params>, borrow::True, #(#fields_param,)*>;
+            }
+        }
+    );
+
+    // Generates:
+    //
+    // ```
+    // impl<'__s__, __S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::CloneRef<'__s__>
+    // for CtxRef<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // where
+    //     __Track__: borrow::Bool,
+    //     borrow::Field<__Track__, __Version>: borrow::CloneField<'__s__, __Track__>,
+    //     borrow::Field<__Track__, __Geometry>: borrow::CloneField<'__s__, __Track__>,
+    //     borrow::Field<__Track__, __Material>: borrow::CloneField<'__s__, __Track__>,
+    //     borrow::Field<__Track__, __Mesh>: borrow::CloneField<'__s__, __Track__>,
+    //     borrow::Field<__Track__, __Scene>: borrow::CloneField<'__s__, __Track__>,
+    // {
+    //     type Cloned = CtxRef<
+    //         __S__,
+    //         __Track__,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Version>, __Track__>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Geometry>, __Track__>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Material>, __Track__>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Mesh>, __Track__>,
+    //         borrow::ClonedField<'__s__, borrow::Field<__Track__, __Scene>, __Track__>
+    //     >;
+    //     fn clone_ref_disabled_usage_tracking(&'__s__ mut self) -> Self::Cloned {
+    //         use borrow::CloneField;
+    //         CtxRef {
+    //             version: self.version.clone_field_disabled_usage_tracking(),
+    //             geometry: self.geometry.clone_field_disabled_usage_tracking(),
+    //             material: self.material.clone_field_disabled_usage_tracking(),
+    //             mesh: self.mesh.clone_field_disabled_usage_tracking(),
+    //             scene: self.scene.clone_field_disabled_usage_tracking(),
+    //             marker: std::marker::PhantomData,
+    //             usage_tracker: borrow::UsageTracker::new(),
+    //         }
+    //     }
+    // }
+    // ```
+    out.push(
+        quote! {
+            impl<'__s__, __S__, __Track__, #(#fields_param,)*> borrow::CloneRef<'__s__>
+            for #ref_ident<__S__, __Track__, #(#fields_param,)*>
+            where
+                __Track__: borrow::Bool,
+                #(borrow::Field<__Track__, #fields_param>: borrow::CloneField<'__s__, __Track__>,)*
+            {
+                type Cloned = #ref_ident<
+                    __S__,
+                    __Track__,
+                    #(borrow::ClonedField<'__s__, borrow::Field<__Track__, #fields_param>, __Track__>,)*
+                >;
+                fn clone_ref_disabled_usage_tracking(&'__s__ mut self) -> Self::Cloned {
+                    use borrow::CloneField;
+                    #ref_ident {
+                        #(#fields_ident: self.#fields_ident.clone_field_disabled_usage_tracking(),)*
+                        marker: std::marker::PhantomData,
+                        usage_tracker: borrow::UsageTracker::new(),
+                    }
+                }
+            }
+        }
+    );
+
+    // Generates:
+    //
+    // ```
+    // #[allow(non_camel_case_types)]
+    // #[allow(non_snake_case)]
+    // impl<__S__, __Track__, __Track__Target__,
+    //     __Version, __Geometry, __Material, __Mesh, __Scene,
+    //     __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target,
+    //     __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>
+    // borrow::IntoPartial<CtxRef<__S__, __Track__Target__, __Version__Target, __Geometry__Target, __Material__Target, __Mesh__Target, __Scene__Target>>
+    // for CtxRef<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // where
+    //     __Track__: borrow::Bool,
+    //     __Track__Target__: borrow::Bool,
+    //     borrow::AcquireMarker: borrow::Acquire<__Version, __Version__Target, Rest=__Version__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<__Geometry, __Geometry__Target, Rest=__Geometry__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<__Material, __Material__Target, Rest=__Material__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<__Mesh, __Mesh__Target, Rest=__Mesh__Rest>,
+    //     borrow::AcquireMarker: borrow::Acquire<__Scene, __Scene__Target, Rest=__Scene__Rest>,
+    // {
+    //     type Rest = CtxRef<__S__, __Track__, __Version__Rest, __Geometry__Rest, __Material__Rest, __Mesh__Rest, __Scene__Rest>;
+    //     #[track_caller]
+    //     #[inline(always)]
+    //     fn into_split_impl(
+    //         mut self
+    //     ) -> (CtxRef<
+    //         __S__,
+    //         __Track__Target__,
+    //         __Version__Target,
+    //         __Geometry__Target,
+    //         __Material__Target,
+    //         __Mesh__Target,
+    //         __Scene__Target
+    //     >,
+    //         Self::Rest
+    //     ) {
+    //         use borrow::Acquire;
+    //         let usage_tracker = borrow::UsageTracker::new();
+    //         let (version, __version__rest) = borrow::AcquireMarker::acquire(self.version, usage_tracker.clone());
+    //         let (geometry, __geometry__rest) = borrow::AcquireMarker::acquire(self.geometry, usage_tracker.clone());
+    //         let (material, __material__rest) = borrow::AcquireMarker::acquire(self.material, usage_tracker.clone());
+    //         let (mesh, __mesh__rest) = borrow::AcquireMarker::acquire(self.mesh, usage_tracker.clone());
+    //         let (scene, __scene__rest) = borrow::AcquireMarker::acquire(self.scene, usage_tracker.clone());
+    //         (
+    //             CtxRef {
+    //                 version,
+    //                 geometry,
+    //                 material,
+    //                 mesh,
+    //                 scene,
+    //                 marker: std::marker::PhantomData,
+    //                 usage_tracker
+    //             },
+    //             CtxRef {
+    //                 version: __version__rest,
+    //                 geometry: __geometry__rest,
+    //                 material: __material__rest,
+    //                 mesh: __mesh__rest,
+    //                 scene: __scene__rest,
+    //                 marker: std::marker::PhantomData,
+    //                 usage_tracker: borrow::UsageTracker::new(),
+    //             }
+    //         )
+    //     }
+    // }
+    // ```
+
+    out.push({
+        let field_params_target = fields_param.iter().map(|i| {
+            Ident::new(&format!("{i}{}", internal("Target")), i.span())
+        }).collect_vec();
+
+        let field_params_rest = fields_param.iter().map(|i| {
+            Ident::new(&format!("{i}{}", internal("Rest")), i.span())
+        }).collect_vec();
+
+        let fields_rest_ident = fields_ident.iter().map(|i|
+            Ident::new(&format!("{}{}", internal(&i.to_string()), internal("rest")), i.span())
+        ).collect_vec();
+
+        quote! {
+            #[allow(non_camel_case_types)]
+            #[allow(non_snake_case)]
+            impl<__S__, __Track__, __Track__Target__,
+                #(#fields_param,)*
+                #(#field_params_target,)*
+                #(#field_params_rest,)*
+            >
+            borrow::IntoPartial<#ref_ident<__S__, __Track__Target__, #(#field_params_target,)*>>
+            for #ref_ident<__S__, __Track__, #(#fields_param,)*>
+            where
+                __Track__: borrow::Bool,
+                __Track__Target__: borrow::Bool,
+                #(
+                    borrow::AcquireMarker: borrow::Acquire<
+                        #fields_param,
+                        #field_params_target,
+                        Rest=#field_params_rest
+                    >,
+                )*
+            {
+                type Rest = #ref_ident<__S__, __Track__, #(#field_params_rest,)*>;
+
+                #[track_caller]
+                #[inline(always)]
+                fn into_split_impl(
+                    mut self
+                ) -> (
+                    #ref_ident<__S__, __Track__Target__, #(#field_params_target,)*>,
+                    Self::Rest
+                ) {
+                    use borrow::Acquire;
+                    let usage_tracker = borrow::UsageTracker::new();
+                    #(let (#fields_ident, #fields_rest_ident) =
+                        borrow::AcquireMarker::acquire(self.#fields_ident, usage_tracker.clone());)*
+                    (
+                        #ref_ident {
+                            #(#fields_ident,)*
+                            marker: std::marker::PhantomData,
+                            usage_tracker
+                        },
+                        #ref_ident {
+                            #(#fields_ident: #fields_rest_ident,)*
+                            marker: std::marker::PhantomData,
+                            usage_tracker: borrow::UsageTracker::new()
+                        }
+                    )
+                }
+            }
+        }
+    });
+
+
+    // Generates:
+
+    // ```
+    // #[allow(non_camel_case_types)]
+    // impl<'__a__, __S__, __Track__, __Target__,
+    //     __Version, __Geometry, __Material, __Mesh, __Scene>
+    // borrow::Partial<'__a__, __Target__>
+    // for CtxRef<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene> where
+    //     __Track__: borrow::Bool,
+    //     Self: borrow::CloneRef<'__a__>,
+    //     borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<__Target__>
+    // {
+    //     type Rest = <borrow::ClonedRef<'__a__, Self> as borrow::IntoPartial<__Target__>>::Rest;
+    //     #[track_caller]
+    //     #[inline(always)]
+    //     fn split_impl(&'__a__ mut self) -> (__Target__, Self::Rest) {
+    //         use borrow::CloneRef;
+    //         use borrow::IntoPartial;
+    //         // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
+    //         // we need to disable them.
+    //         let this = self.clone_ref_disabled_usage_tracking();
+    //         this.into_split_impl()
+    //     }
+    // }
+    // ```
+    out.push({
+        quote! {
+            #[allow(non_camel_case_types)]
+            impl<'__a__, __S__, __Track__, __Target__, #(#fields_param,)*>
+            borrow::Partial<'__a__, __Target__>
+            for #ref_ident<__S__, __Track__, #(#fields_param,)*> where
+                __Track__: borrow::Bool,
+                Self: borrow::CloneRef<'__a__>,
+                borrow::ClonedRef<'__a__, Self>: borrow::IntoPartial<__Target__>
+            {
+                type Rest = <borrow::ClonedRef<'__a__, Self> as borrow::IntoPartial<__Target__>>::Rest;
+                #[track_caller]
+                #[inline(always)]
+                fn split_impl(&'__a__ mut self) -> (__Target__, Self::Rest) {
+                    use borrow::CloneRef;
+                    use borrow::IntoPartial;
+                    // As the usage trackers are cloned and immediately destroyed by `into_split_impl`,
+                    // we need to disable them.
+                    let this = self.clone_ref_disabled_usage_tracking();
+                    this.into_split_impl()
+                }
+            }
+        }
+    });
+
+    // For each field. For the 'version' field:
+    //
+    // ```
+    // impl<'__s__, '__tgt__, 't, T, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // CtxRef<Ctx<'t, T>, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // where
+    //     __Track__: borrow::Bool,
+    //     T: Debug,
+    //     &'t T: '__tgt__,
+    //     Self: borrow::CloneRef<'__s__>,
+    //     borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
+    //         CtxRef<
+    //             Ctx<'t, T>,
+    //             __Track__,
+    //             borrow::Hidden,
+    //             &'__tgt__ mut GeometryCtx,
+    //             borrow::Hidden,
+    //             borrow::Hidden,
+    //             borrow::Hidden
+    //         >
+    //     >
+    // {
+    //     #[track_caller]
+    //     #[inline(always)]
+    //     pub fn extract_geometry2(&'__s__ mut self) -> (
+    //         borrow::Field<__Track__, &'__tgt__ mut GeometryCtx>,
+    //         <borrow::ClonedRef<'__s__, Self> as borrow::IntoPartial<
+    //             CtxRef<
+    //                 Ctx<'t, T>,
+    //                 __Track__,
+    //                 borrow::Hidden,
+    //                 &'__tgt__ mut GeometryCtx,
+    //                 borrow::Hidden,
+    //                 borrow::Hidden,
+    //                 borrow::Hidden
+    //             >
+    //         >>::Rest
+    //     ) {
+    //         let split = borrow::IntoPartial::into_split_impl(
+    //             borrow::CloneRef::clone_ref_disabled_usage_tracking(self)
+    //         );
+    //         (split.0.geometry, split.1)
+    //     }
+    // }
+    // ```
+    out.extend((0..fields_param.len()).map(|i| {
+        let field_ident = &fields_ident[i];
+        let field_ty = &fields_ty[i];
+        let field_ref_mut = quote! {&'__tgt__ mut #field_ty};
+        let field_ref = quote! {&'__tgt__ #field_ty};
+
+        let mut params2 = fields_param.clone();
+        params2.remove(i);
+
+        let mut target_params_mut = fields_param.iter().map(|_| quote! {borrow::Hidden}).collect_vec();
+        target_params_mut[i] = field_ref_mut.clone();
+
+        let mut target_params = fields_param.iter().map(|_| quote! {borrow::Hidden}).collect_vec();
+        target_params[i] = field_ref.clone();
+
+        let fn_ident = Ident::new(&format!("borrow_{field_ident}"), field_ident.span());
+        let fn_ident_mut = Ident::new(&format!("borrow_{field_ident}_mut"), field_ident.span());
+
+        quote! {
+            #[allow(non_camel_case_types)]
+            impl<'__s__, '__tgt__, #params __Track__, #(#fields_param,)*>
+            #ref_ident<#ident<#params>, __Track__, #(#fields_param,)*>
+            where
+                #bounds
+                __Track__: borrow::Bool,
+                #field_ty: '__tgt__,
+                Self: borrow::CloneRef<'__s__>,
+                borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
+                    #ref_ident<
+                        #ident<#params>,
+                        __Track__,
+                        #(#target_params_mut,)*
+                    >
+                >
+            {
+                #[track_caller]
+                #[inline(always)]
+                pub fn #fn_ident_mut(&'__s__ mut self) -> (
+                    borrow::Field<__Track__, #field_ref_mut>,
+                        <borrow::ClonedRef<'__s__, Self> as borrow::IntoPartial<
+                            #ref_ident<
+                                #ident<#params>,
+                                __Track__,
+                                #(#target_params_mut,)*
+                            >
+                        >>::Rest
+                ) {
+                    let split = borrow::IntoPartial::into_split_impl(
+                        borrow::CloneRef::clone_ref_disabled_usage_tracking(self)
+                    );
+                    (split.0.#field_ident, split.1)
+                }
+            }
+
+            #[allow(non_camel_case_types)]
+            impl<'__s__, '__tgt__, #params __Track__, #(#fields_param,)*>
+            #ref_ident<#ident<#params>, __Track__, #(#fields_param,)*>
+            where
+                #bounds
+                __Track__: borrow::Bool,
+                #field_ty: '__tgt__,
+                Self: borrow::CloneRef<'__s__>,
+                borrow::ClonedRef<'__s__, Self>: borrow::IntoPartial<
+                    #ref_ident<
+                        #ident<#params>,
+                        __Track__,
+                        #(#target_params,)*
+                    >
+                >
+            {
+                #[track_caller]
+                #[inline(always)]
+                pub fn #fn_ident(&'__s__ mut self) -> (
+                    borrow::Field<__Track__, #field_ref>,
+                        <borrow::ClonedRef<'__s__, Self> as borrow::IntoPartial<
+                            #ref_ident<
+                                #ident<#params>,
+                                __Track__,
+                                #(#target_params,)*
+                            >
+                        >>::Rest
+                ) {
+                    let split = borrow::IntoPartial::into_split_impl(
+                        borrow::CloneRef::clone_ref_disabled_usage_tracking(self)
+                    );
+                    (split.0.#field_ident, split.1)
+                }
+            }
+        }
+    }));
+
+
+    // Generates:
+    //
+    // ```
+    // impl<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene> borrow::HasUsageTrackedFields
+    // for CtxRef<__S__, __Track__, __Version, __Geometry, __Material, __Mesh, __Scene>
+    // where __Track__: borrow::Bool {
+    //     #[inline(always)]
+    //     fn disable_field_usage_tracking(&self) {
+    //         self.version.disable_usage_tracking();
+    //         self.geometry.disable_usage_tracking();
+    //         self.material.disable_usage_tracking();
+    //         self.mesh.disable_usage_tracking();
+    //         self.scene.disable_usage_tracking();
+    //     }
+    //
+    //     #[inline(always)]
+    //     fn mark_all_fields_as_used(&self) {
+    //         self.version.mark_as_used();
+    //         self.geometry.mark_as_used();
+    //         self.material.mark_as_used();
+    //         self.mesh.mark_as_used();
+    //         self.scene.mark_as_used();
+    //     }
+    // }
+    // ```
+    out.push(quote! {
+        impl<__S__, __Track__, #(#fields_param,)*> borrow::HasUsageTrackedFields
+        for #ref_ident<__S__, __Track__, #(#fields_param,)*>
+        where __Track__: borrow::Bool {
+            #[inline(always)]
+            fn disable_field_usage_tracking(&self) {
+                #(self.#fields_ident.disable_usage_tracking();)*
+            }
+            #[inline(always)]
+            fn mark_all_fields_as_used(&self) {
+                #(self.#fields_ident.mark_as_used();)*
+            }
+        }
+    });
+
+    // Generates:
+    //
+    // ```
+    // impl<'t, T> borrow::AsRefsMut for Ctx<'t, T>
+    // where T: Debug {
+    //     type Target<'__s> =
+    //     borrow::RefWithFields<Ctx<'t, T>, borrow::FieldsAsMut<'__s, Ctx<'t, T>>>
+    //     where Self: '__s;
+    //     #[track_caller]
+    //     #[inline(always)]
+    //     fn as_refs_mut<'__s>(&'__s mut self) -> Self::Target<'__s> {
+    //         let usage_tracker = borrow::UsageTracker::new();
+    //         let struct_ref = CtxRef {
+    //             version: borrow::Field::new(
+    //                 "version",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.version,
+    //                 usage_tracker.clone()
+    //             ),
+    //             geometry: borrow::Field::new(
+    //                 "geometry",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.geometry,
+    //                 usage_tracker.clone()
+    //             ),
+    //             material: borrow::Field::new(
+    //                 "material",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.material,
+    //                 usage_tracker.clone()
+    //             ),
+    //             mesh: borrow::Field::new(
+    //                 "mesh",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.mesh,
+    //                 usage_tracker.clone()
+    //             ),
+    //             scene: borrow::Field::new(
+    //                 "scene",
+    //                 Some(borrow::Usage::Mut),
+    //                 &mut self.scene,
+    //                 usage_tracker.clone()
+    //             ),
+    //             marker: std::marker::PhantomData,
+    //             usage_tracker,
+    //         };
+    //         borrow::HasUsageTrackedFields::disable_field_usage_tracking(&struct_ref);
+    //         struct_ref
+    //     }
+    // }
+    // ```
+    out.push(quote! {
+        impl<#params> borrow::AsRefsMut for #ident<#params>
+        where #bounds {
+            type Target<'__s> =
+                borrow::RefWithFields<#ident<#params>, borrow::FieldsAsMut<'__s, #ident<#params>>>
+            where Self: '__s;
+            #[track_caller]
+            #[inline(always)]
+            fn as_refs_mut<'__s>(&'__s mut self) -> Self::Target<'__s> {
+                let usage_tracker = borrow::UsageTracker::new();
+                let struct_ref = #ref_ident {
+                    #(
+                        #fields_ident: borrow::Field::new(
+                            stringify!(#fields_ident),
+                            Some(borrow::Usage::Mut),
+                            &mut self.#fields_ident,
+                            usage_tracker.clone(),
+                        ),
+                    )*
+                    marker: std::marker::PhantomData,
+                    usage_tracker
+                };
+                borrow::HasUsageTrackedFields::disable_field_usage_tracking(&struct_ref);
+                struct_ref
+            }
+        }
+    });
+
+    let output = quote! {
+        #(#out)*
+    };
+
+    // println!("OUTPUT:\n{}", output);
+    output.into()
+}
+
+// ======================
+// === partial! Macro ===
+// ======================
+
+#[derive(Debug)]
+enum Selector {
+    Ident { lifetime: Option<TokenStream>, is_mut: bool, ident: Ident },
+    Star { lifetime: Option<TokenStream>, is_mut: bool }
+}
+
+enum Selectors {
+    List(Vec<Selector>),
+    All
+}
+
+// #[derive(Debug)]
+struct MyInput {
+    has_underscore: bool,
+    has_amp: bool,
+    lifetime: Option<TokenStream>,
+    selectors: Selectors,
+    target: Type,
+}
+
+fn parse_angled_list<T: Parse>(input: ParseStream) -> Vec<T> {
+    let mut params = vec![];
+    while !input.peek(Token![>]) {
+        if let Ok(value) = input.parse::<T>() {
+            params.push(value);
+        } else {
+            break
+        }
+        if input.peek(Token![>]) {
+            break;
+        }
+        input.parse::<Token![,]>().ok();
+    }
+    params
+}
+
+
+impl Parse for Selector {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let lifetime = input.parse::<syn::Lifetime>().ok().map(|t| quote! { #t });
+        let is_mut = input.parse::<Token![mut]>().is_ok();
+        if input.parse::<Token![*]>().is_ok() {
+            Ok(Selector::Star{ lifetime, is_mut })
+        } else {
+            let ident: Ident = input.parse()?;
+            Ok(Selector::Ident{ lifetime, is_mut, ident })
+        }
+    }
+}
+
+impl Parse for MyInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let has_underscore = input.parse::<Token![_]>().is_ok();
+        let has_amp = input.parse::<Token![&]>().is_ok();
+
+        let lifetime = input.parse::<syn::Lifetime>().ok().map(|t| quote! { #t });
+
+        let selectors = if input.parse::<Token![mut]>().is_ok() {
+            Selectors::All
+        } else if input.parse::<Token![<]>().is_ok() {
+            let selectors = parse_angled_list::<Selector>(input);
+            input.parse::<Token![>]>()?;
+            Selectors::List(selectors)
+        } else {
+            Selectors::List(vec![])
+        };
+
+        let target: Type = input.parse()?;
+
+        Ok(MyInput {
+            has_underscore,
+            has_amp,
+            lifetime,
+            selectors,
+            target,
+        })
+    }
+}
+
+#[allow(clippy::cognitive_complexity)]
+#[proc_macro]
+pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input_raw as MyInput);
+
+    let target_ident = match &input.target {
+        Type::Path(type_path) if type_path.path.segments.len() == 1 => {
+            let ident = &type_path.path.segments[0].ident;
+            let is_lower = ident.to_string().chars().next().is_some_and(|c| c.is_lowercase());
+            is_lower.then_some(&type_path.path.segments[0].ident)
+        }
+        _ => None,
+    };
+
+    let out = if let Some(target_ident) = target_ident {
+        quote! {
+            &mut #target_ident.partial_borrow()
+        }
+    } else {
+        let target_ident = match &input.target {
+            Type::Path(type_path) if type_path.path.segments.len() == 1 => {
+                &type_path.path.segments[0].ident
+            }
+            _ => panic!()
+        };
+
+        let target = &input.target;
+        let default_lifetime = input.lifetime.unwrap_or_else(|| quote!{ '_ });
+        let mut out = quote! { };
+        match &input.selectors {
+            Selectors::All => out = quote! {
+                borrow::FieldsAsMut <#default_lifetime, #target>
+            },
+            Selectors::List(selectors) => {
+                for selector in selectors {
+                    out = match selector {
+                        Selector::Ident { lifetime, is_mut, ident } => {
+                            let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
+                            if *is_mut {
+                                quote! { #out #ident [& #lt mut]   }
+                            } else {
+                                quote! { #out #ident [& #lt]   }
+                            }
+                        }
+                        Selector::Star { lifetime, is_mut } => {
+                            let lt = lifetime.as_ref().unwrap_or(&default_lifetime);
+                            if *is_mut {
+                                quote! { * [& #lt mut]    }
+                            } else {
+                                quote! { * [& #lt]   }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let track = if input.has_underscore {
+            quote! { borrow::False }
+        } else {
+            quote! { borrow::True }
+        };
+        let pfx = if input.has_amp {
+            quote! { [& #default_lifetime mut] }
+        } else {
+            quote! { [] }
+        };
+
+        out = quote! {
+            #target_ident!{@0 #pfx [#track] [#target] #out}
+        };
+        out
+    };
+
+    // println!("{}", out);
+    out.into()
 }

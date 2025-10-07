@@ -76,10 +76,31 @@ T: Index<N> {
 
 pub type ItemAt<N, T> = <T as Index<N>>::Item;
 
+
+// =================
+// === SetItemAt ===
+// =================
+
+pub trait SetItemAt<N: Nat, Item> {
+    type Result;
+}
+
+impl<Item, H, T> SetItemAt<Zero, Item> for Cons<H, T> {
+    type Result = Cons<Item, T>;
+}
+
+impl<N: Nat, Item, H, T> SetItemAt<Succ<N>, Item> for Cons<H, T>
+where T: SetItemAt<N, Item> {
+    type Result = Cons<H, SetItemAtResult<T, N, Item>>;
+}
+
+pub type SetItemAtResult<T, N, Item> = <T as SetItemAt<N, Item>>::Result;
+
 // ==============
 // === Macros ===
 // ==============
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! HList {
     () => { $crate::hlist::Nil };
@@ -88,6 +109,7 @@ macro_rules! HList {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! hlist {
     () => { $crate::hlist::Nil };
@@ -99,6 +121,7 @@ macro_rules! hlist {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! hlist_pat {
     () => { $crate::hlist::Nil };
