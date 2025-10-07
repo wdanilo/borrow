@@ -846,12 +846,6 @@ enum Selectors {
     All
 }
 
-impl Selectors {
-    fn is_all(&self) -> bool {
-        matches!(self, Selectors::All)
-    }
-}
-
 // #[derive(Debug)]
 struct MyInput {
     has_underscore: bool,
@@ -926,7 +920,7 @@ pub fn partial(input_raw: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input_raw as MyInput);
 
     let target_ident = match &input.target {
-        Type::Path(type_path) if type_path.path.segments.len() == 1 && input.selectors.is_all() => {
+        Type::Path(type_path) if type_path.path.segments.len() == 1 => {
             let ident = &type_path.path.segments[0].ident;
             let is_lower = ident.to_string().chars().next().is_some_and(|c| c.is_lowercase());
             is_lower.then_some(&type_path.path.segments[0].ident)
